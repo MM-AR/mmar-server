@@ -97,6 +97,10 @@
       "query": "SELECT * FROM metaobject m, attribute a WHERE m.uuid = a.uuid_metaobject AND a.uuid_metaobject = $1 "
     },
     {
+      "name": "file_uuid_query",
+      "query": "SELECT * FROM metaobject m, file f WHERE m.uuid = f.uuid_metaobject AND f.uuid_metaobject = $1 "
+    },
+    {
       "name": "attribute_type_uuid_query",
       "query": "SELECT * FROM metaobject m, attribute_type at2 WHERE m.uuid = at2.uuid_metaobject AND at2.uuid_metaobject = $1 "
     },
@@ -262,7 +266,7 @@
     },
     {
       "name": "get_sequence_attr_by_attrType_uuid",
-      "query": "select hta.sequence, hta.uuid_attribute from has_table_attribute hta where hta.uuid_attribute_type = $1 order by hta.sequence"
+      "query": "select hta.sequence, hta.uuid_attribute, hta.ui_component from has_table_attribute hta where hta.uuid_attribute_type = $1 order by hta.sequence"
     },
     {
       "name": "get_attributes_table_from_attribute_uuid",
