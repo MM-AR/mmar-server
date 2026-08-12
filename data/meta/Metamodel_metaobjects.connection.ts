@@ -239,7 +239,7 @@ class Metamodel_metaobjectsConnection implements CRUD {
         const restrictedUuids: { uuid: UUID; name: string; type: string }[] = [];
 
         // Base query to delete the object and return violations if any
-        let queryDel = "select delete_and_return_violation($1);";
+        let queryDel = "select * from delete_and_return_violation($1);";
         const queryParams = [uuidToDelete];
 
 
@@ -249,7 +249,7 @@ class Metamodel_metaobjectsConnection implements CRUD {
             if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUuid} has no right to delete the meta object ${uuidToDelete}`);
 
             // If a user UUID is provided, modify the query to include user-specific deletion checks
-            queryDel = "select delete_and_return_violation($1,$2)";
+            queryDel = "select * from delete_and_return_violation($1,$2)";
             queryParams.push(userUuid);
         }
 
@@ -282,10 +282,15 @@ class Metamodel_metaobjectsConnection implements CRUD {
                         type: row.type,
                     });
                     break;
-                default:
-                    // If the error is not a foreign key violation, throw an error with the error message
+                case null:
+                    // No error occurred, forward the UUID
                     returnUuids.push(row.uuid);
                     break;
+                default:
+                    // If the error is not a foreign key violation, throw an error with the error message
+                    return new HTTP500Error(
+                        `The meta object ${uuidToDelete} could not be deleted: ${row.error}`
+                    );
             }
         }
         if (restrictedUuids.length > 0) {
@@ -298,7 +303,7 @@ class Metamodel_metaobjectsConnection implements CRUD {
         }
 
         // If there are UUIDs to return, return them, else return undefined
-        return returnUuids[0] != undefined ? returnUuids : resultDel.rows[0].delete_and_return_violation as UUID[];
+        return returnUuids.length > 0 ? returnUuids : undefined;
     }
 }
 
