@@ -27,6 +27,67 @@ class Instance_portsConnection implements CRUD {
      * @method
      *
      */
+    /**
+     * @description - Read every port instance of many parents at once, with the
+     * attributes of all of those ports fetched together.
+     *
+     * The result is keyed by parent uuid; a parent with no ports is absent rather
+     * than present with an empty list.
+     * @param {PoolClient} client - The client to the database.
+     * @param {UUID[]} parentUuids - The parents to load the ports of.
+     * @param {"class" | "scene"} parentType - Whether those parents are classes or scenes.
+     * @returns {Promise<Map<UUID, PortInstance[]>>} - The ports per parent.
+     */
+    async getAllByParentUuids(
+        client: PoolClient,
+        parentUuids: UUID[],
+        parentType: "class" | "scene"
+    ): Promise<Map<UUID, PortInstance[]>> {
+        const byParent = new Map<UUID, PortInstance[]>();
+        if (parentUuids.length === 0) return byParent;
+
+        // A closed set of literals, never a value from a request.
+        const parentColumn =
+            parentType === "class" ? "uuid_class_instance" : "uuid_scene_instance";
+
+        try {
+            const res = await client.query(
+                `SELECT io.*, pi2.*
+                 FROM port_instance pi2
+                          JOIN instance_object io ON io.uuid = pi2.uuid_instance_object
+                 WHERE pi2.${parentColumn} = ANY ($1::uuid[])`,
+                [parentUuids]
+            );
+            if (res.rowCount === 0) return byParent;
+
+            const ports = res.rows.map(
+                (row) => PortInstance.fromJS(row) as PortInstance
+            );
+            const attributes =
+                await Instance_attribute_connection.getAllByParentUuids(
+                    client,
+                    ports.map((port) => port.get_uuid()),
+                    "port"
+                );
+
+            res.rows.forEach((row, index) => {
+                const port = ports[index];
+                port.set_attribute_instance(
+                    attributes.get(port.get_uuid()) ?? []
+                );
+                const parent = row[parentColumn] as UUID;
+                const existing = byParent.get(parent);
+                if (existing) existing.push(port);
+                else byParent.set(parent, [port]);
+            });
+            return byParent;
+        } catch (err) {
+            throw new Error(
+                `Error getting the ports for the parents ${parentUuids.join(", ")}: ${err}`
+            );
+        }
+    }
+
     async getByUuid(
         client: PoolClient,
         portUuid: UUID,
@@ -37,14 +98,11 @@ class Instance_portsConnection implements CRUD {
             const ports_query = queries.getQuery_get("instance_port_uuid_query");
             let newPort;
 
-            if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
-                const res = await client.query(read_check, [portUuid, userUuid]);
-                if (res.rowCount == 0) {
-                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the port instance ${portUuid}`);
-
-                }
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
             const res_port = await client.query(ports_query, [portUuid]);
 
             if (res_port.rowCount == 1) {
@@ -78,9 +136,8 @@ class Instance_portsConnection implements CRUD {
     async getAllByParentUuid(
         client: PoolClient,
         uuidParent: UUID,
-        userUuid?: UUID
+        _userUuid?: UUID
     ): Promise<PortInstance[] | BaseError> {
-        let port_query: string;
         const returnPorts = new Array<PortInstance>();
         try {
             const uuid_type =
@@ -90,37 +147,31 @@ class Instance_portsConnection implements CRUD {
                 );
 
             if (uuid_type) {
+                // Which batch this parent belongs in. A relationclass instance is
+                // a class instance, so its ports hang off uuid_class_instance too,
+                // exactly as instance_port_by_class_uuid_query had it.
+                let parentType: "class" | "scene";
                 switch (uuid_type.type) {
                     case "scene_type":
-                        port_query = queries.getQuery_get(
-                            "instance_port_for_scene_instance_query"
-                        );
+                        parentType = "scene";
                         break;
                     case "class":
-                        port_query = queries.getQuery_get(
-                            "instance_port_by_class_uuid_query"
-                        );
-                        break;
                     case "relationclass":
-                        port_query = queries.getQuery_get(
-                            "instance_port_by_class_uuid_query"
-                        );
+                        parentType = "class";
                         break;
                     default:
                         throw new Error(
                             `Error the uuid ${uuidParent} cannot be a parent for a port`
                         );
                 }
-                const res_port = await client.query(port_query, [uuidParent]);
-                for (const cl of res_port.rows) {
-                    const newPort = await this.getByUuid(
-                        client,
-                        cl.uuid_instance_object,
-                        userUuid
-                    );
-                    if (newPort instanceof PortInstance) returnPorts.push(newPort);
-
-                }
+                // One query for the ports and one for all their attributes, rather
+                // than one per port plus the attribute fan-out inside each.
+                const byParent = await this.getAllByParentUuids(
+                    client,
+                    [uuidParent],
+                    parentType
+                );
+                returnPorts.push(...(byParent.get(uuidParent) ?? []));
             }
             return returnPorts;
         } catch (err) {

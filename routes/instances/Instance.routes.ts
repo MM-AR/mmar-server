@@ -1,6 +1,6 @@
 import { Router } from "express";
-import { HTTP500Error } from "../../data/services/middleware/error_handling/standard_errors.middleware";
 import { custom_rules_object_instance_body } from "../../data/services/model_checking_rules/Metamodel_instanceobject_verificator_ocl";
+import { authenticate_token } from "../../data/services/middleware/auth.middleware";
 
 import bendpointInstanceRouter from "./Instance_bendpoints.routes";
 import portInstanceRouter from "./Instance_ports.routes";
@@ -9,11 +9,16 @@ import sceneInstanceRouter from "./Instance_scenes.routes";
 import relationClassInstanceRouter from "./Instance_relationclasses.routes";
 import roleInstanceRouter from "./Instance_roles.routes";
 import classInstanceRouter from "./Instance_classes.routes";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
 
 /** @description - This is the router for the Instance part of the project.
  * @type {Router}
  */
 const instanceRouter = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(instanceRouter);
 
 instanceRouter.use(bendpointInstanceRouter);
 instanceRouter.use(portInstanceRouter);
@@ -23,36 +28,6 @@ instanceRouter.use(relationClassInstanceRouter);
 instanceRouter.use(roleInstanceRouter);
 instanceRouter.use(classInstanceRouter);
 
-// This is a helper route to test the level
-instanceRouter.get(
-  /*
-  #swagger.tags = ['Instance']
-  #swagger.summary = 'Test instance level'
-  #swagger.responses[200] = {
-    "description": "Confirmation message that you are on the instance level"
-  }
-  */
-  "/", 
-  function (req, res) {
-    res.send("you are on instance level");
-    res.status(200);
-});
-
-// This is an error tester router
-instanceRouter.get(
-  /*
-  #swagger.tags = ['Instance']
-  #swagger.summary = 'Trigger a 500 error'
-  #swagger.responses[500] = {
-    "description": "Internal Server Error"
-  }
-  */
-  "/error", 
-  () => {
-    throw new HTTP500Error();
-});
-
-//test
 instanceRouter.get(
   /*
   #swagger.tags = ['Instance']
@@ -72,6 +47,7 @@ instanceRouter.get(
   }
   */
   "/objectInstance_rules_test/:uuid/",
+  authenticate_token,
   custom_rules_object_instance_body
 );
 

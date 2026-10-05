@@ -5,7 +5,7 @@ import {CRUD} from "../common/crud.interface";
 import Instance_attribute_connection from "./Instance_attributes.connection";
 import Instance_class_connection from "./Instance_classes.connection";
 import Instance_objects_connection from "./Instance_objects.connection";
-import {queries} from "../../index";
+import {} from "../../index";
 import {BaseError, HTTP403NORIGHT} from "../services/middleware/error_handling/standard_errors.middleware";
 
 /**
@@ -36,11 +36,11 @@ class Instance_relationclassesConnection implements CRUD {
             const relclasses_query: string =
                 "select * from instance_object io, relationclass_instance ri, class_instance ci where io.uuid=ci.uuid_instance_object AND ri.uuid_class_instance=ci.uuid_instance_object AND ri.uuid_class_instance =$1 ";
             let newRelClass;
-            if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
-                const res = await client.query(read_check, [relclassUuid, userUuid]);
-                if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the relationclass ${relclassUuid}`);
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
 
             const res_relclass = await client.query(relclasses_query, [relclassUuid]);
 
@@ -55,18 +55,19 @@ class Instance_relationclassesConnection implements CRUD {
                 );
                 if (Array.isArray(attributes)) newRelClass.set_attribute_instances(attributes);
 
-                const roleFrom = await Instance_role_connection.getByUuid(
-                    client,
+                // Both ends in one query rather than one each: a relation always
+                // has two roles, so this halves the round trips of every read of
+                // one, and getAllByParentUuid below reads every end of every
+                // relation of a scene in a single query on the same loader.
+                const roles = await Instance_role_connection.getByUuids(client, [
                     cl.uuid_role_instance_from,
-                    userUuid
-                );
+                    cl.uuid_role_instance_to,
+                ]);
+
+                const roleFrom = roles.get(cl.uuid_role_instance_from);
                 if (roleFrom instanceof RoleInstance) newRelClass.set_role_instance_from(roleFrom);
 
-                const roleTo = await Instance_role_connection.getByUuid(
-                    client,
-                    cl.uuid_role_instance_to,
-                    userUuid
-                );
+                const roleTo = roles.get(cl.uuid_role_instance_to);
                 if (roleTo instanceof RoleInstance) newRelClass.set_role_instance_to(roleTo);
             }
 
@@ -93,23 +94,63 @@ class Instance_relationclassesConnection implements CRUD {
     async getAllByParentUuid(
         client: PoolClient,
         uuidParent: UUID,
-        userUuid?: UUID
+        _userUuid?: UUID
     ): Promise<RelationclassInstance[] | BaseError> {
-        const classes_query =
-            "select ri.uuid_class_instance from scene_instance si, relationclass_instance ri , assigned_to_scene ats where ats.uuid_class_instance = ri.uuid_class_instance and ats.uuid_scene_instance = si.uuid_instance_object and si.uuid_instance_object =$1 ";
-
-        const returnRelClasses = new Array<RelationclassInstance>();
         try {
-            const res_relclasses = await client.query(classes_query, [uuidParent]);
-            for (const cl of res_relclasses.rows) {
-                const newRelClass = await this.getByUuid(
-                    client,
-                    cl.uuid_class_instance,
-                    userUuid
-                );
-                if (newRelClass instanceof RelationclassInstance) returnRelClasses.push(newRelClass);
+            // The relations of the scene, then - for all of them at once - their
+            // attributes and both ends of each. Calling getByUuid per relation
+            // instead cost one query for the relation, one to resolve the type of
+            // its attribute parent, one to list those attributes and two more for
+            // its roles: five per relation where this is three in total.
+            //
+            // The column order is io, ri, ci exactly as in the single-relation
+            // query above, so fromJS sees the same row it always did.
+            const res_relclasses = await client.query(
+                `SELECT io.*, ri.*, ci.*
+                 FROM scene_instance si
+                          JOIN assigned_to_scene ats ON ats.uuid_scene_instance = si.uuid_instance_object
+                          JOIN relationclass_instance ri ON ri.uuid_class_instance = ats.uuid_class_instance
+                          JOIN class_instance ci ON ci.uuid_instance_object = ri.uuid_class_instance
+                          JOIN instance_object io ON io.uuid = ci.uuid_instance_object
+                 WHERE si.uuid_instance_object = $1`,
+                [uuidParent]
+            );
+            if (res_relclasses.rowCount === 0) return [];
 
+            const returnRelClasses = res_relclasses.rows.map(
+                (row) => RelationclassInstance.fromJS(row) as RelationclassInstance
+            );
+
+            // Both ends of every relation in one call. Duplicates cost nothing:
+            // getByUuids keys its result by uuid.
+            const roleUuids: UUID[] = [];
+            for (const row of res_relclasses.rows) {
+                if (row.uuid_role_instance_from) roleUuids.push(row.uuid_role_instance_from);
+                if (row.uuid_role_instance_to) roleUuids.push(row.uuid_role_instance_to);
             }
+
+            const [attributes, roles] = await Promise.all([
+                Instance_attribute_connection.getAllByParentUuids(
+                    client,
+                    returnRelClasses.map((relClass) => relClass.get_uuid()),
+                    "relationclass"
+                ),
+                Instance_role_connection.getByUuids(client, roleUuids),
+            ]);
+
+            res_relclasses.rows.forEach((row, index) => {
+                const relClass = returnRelClasses[index];
+                relClass.set_attribute_instances(
+                    attributes.get(relClass.get_uuid()) ?? []
+                );
+
+                const roleFrom = roles.get(row.uuid_role_instance_from);
+                if (roleFrom instanceof RoleInstance) relClass.set_role_instance_from(roleFrom);
+
+                const roleTo = roles.get(row.uuid_role_instance_to);
+                if (roleTo instanceof RoleInstance) relClass.set_role_instance_to(roleTo);
+            });
+
             return returnRelClasses;
         } catch (err) {
             throw new Error(
@@ -277,8 +318,13 @@ class Instance_relationclassesConnection implements CRUD {
         userUuid?: UUID
     ): Promise<RelationclassInstance[] | undefined | BaseError> {
         try {
+            // ON CONFLICT: the else-branch below runs precisely when the relation
+            // already exists, and "already in this scene" is then the norm rather than
+            // a fault. A plain insert raised 23505 on assigned_to_scene_pkey, which
+            // left the whole PATCH answered with an opaque 500 — so a scene holding a
+            // relation the server can no longer see could never be saved again.
             const query_connect_relclass_scenetype =
-                "insert into assigned_to_scene (uuid_class_instance, uuid_scene_instance) values ($1,$2) ";
+                "insert into assigned_to_scene (uuid_class_instance, uuid_scene_instance) values ($1,$2) on conflict do nothing ";
             const returnRelClass: Array<RelationclassInstance> = [];
 
             if (!Array.isArray(newRelClass)) newRelClass = [newRelClass];
@@ -325,17 +371,99 @@ class Instance_relationclassesConnection implements CRUD {
      * @export
      * @method
      */
+    /**
+     * @description - The class instances a relationclass instance uses as its
+     * bendpoints.
+     *
+     * A bendpoint belongs to the relation that bends through it and has no meaning
+     * without it, but nothing in the schema says so: line_points is a text[] of
+     * JSON documents on relationclass_instance, and
+     * class_instance.uuid_relationclass_bendpoint references the *meta* class
+     * rather than the relationclass instance. The ownership therefore has to be
+     * resolved here, and it has to be read before the relation is deleted, since
+     * deleting it takes line_points with it.
+     *
+     * Only the INTERIOR line points are bendpoints, and only those the database
+     * confirms are bendpoint class instances are returned — the two ends of the line
+     * are the objects the relation connects and must outlive it.
+     * @param {PoolClient} client - The client to the database.
+     * @param {UUID} relationclassInstanceUuid - The relation to inspect.
+     * @returns {Promise<UUID[]>} - The uuids of its bendpoint class instances.
+     */
+    private async getBendpointUuids(
+        client: PoolClient,
+        relationclassInstanceUuid: UUID
+    ): Promise<UUID[]> {
+        const res = await client.query(
+            "SELECT line_points FROM relationclass_instance WHERE uuid_class_instance = $1",
+            [relationclassInstanceUuid]
+        );
+        const points: string[] = res.rows[0]?.line_points ?? [];
+
+        // line_points is [from, ...bendpoints, to]: the FIRST and LAST entries name the
+        // objects the relation connects, not bendpoints. Reading the whole array made
+        // this method answer with the relation's two endpoints, and deleteByUuid then
+        // deleted them — so removing one Arc took the Place and the Transition it ran
+        // between with it, and the arcs hanging off those cascaded down to rows the
+        // scene query can no longer see.
+        const interior = points.slice(1, -1);
+
+        const uuids: UUID[] = [];
+        for (const point of interior) {
+            try {
+                const parsed = typeof point === "string" ? JSON.parse(point) : point;
+                const uuid = parsed?.UUID ?? parsed?.uuid;
+                if (typeof uuid === "string") uuids.push(uuid);
+            } catch {
+                // A line point that is not a JSON document names no bendpoint.
+            }
+        }
+        if (uuids.length === 0) return [];
+
+        // Position alone is not proof. A class instance is only deleted here if the
+        // database agrees it is a bendpoint, so a malformed or reordered line_points
+        // can never cost the user a modelled object.
+        const confirmed = await client.query(
+            `SELECT uuid_instance_object
+             FROM class_instance
+             WHERE uuid_instance_object = ANY ($1::uuid[])
+               AND uuid_relationclass_bendpoint IS NOT NULL`,
+            [uuids]
+        );
+        return confirmed.rows.map((row) => row.uuid_instance_object as UUID);
+    }
+
     async deleteByUuid(
         client: PoolClient,
         uuidToDelete: UUID,
         userUuid?: UUID
     ): Promise<UUID[] | undefined | BaseError> {
         try {
-            return Instance_objects_connection.deleteByUuid(
+            // Read the bendpoints first: they are named by the row about to go.
+            const bendpointUuids = await this.getBendpointUuids(client, uuidToDelete);
+
+            const deleted = await Instance_objects_connection.deleteByUuid(
                 client,
                 uuidToDelete,
                 userUuid
             );
+            if (!Array.isArray(deleted)) return deleted;
+
+            // A bendpoint outlives its relation otherwise, leaving a class instance
+            // in the scene that nothing references and no client can reach.
+            const removed = new Set<UUID>(deleted);
+            for (const bendpointUuid of bendpointUuids) {
+                if (removed.has(bendpointUuid)) continue;
+                const cascaded = await Instance_objects_connection.deleteByUuid(
+                    client,
+                    bendpointUuid,
+                    userUuid
+                );
+                if (Array.isArray(cascaded)) {
+                    for (const uuid of cascaded) removed.add(uuid);
+                }
+            }
+            return [...removed];
         } catch (err) {
             throw new Error(`Error deleting relationclass ${uuidToDelete}: ${err}`);
         }
@@ -359,14 +487,24 @@ class Instance_relationclassesConnection implements CRUD {
         userUuid?: UUID
     ): Promise<UUID[] | undefined | BaseError> {
         try {
-            const portInstances = await this.getAllByParentUuid(client, parentUuid, userUuid);
-            if (portInstances instanceof BaseError) return portInstances;
+            const relationclassInstances = await this.getAllByParentUuid(client, parentUuid, userUuid);
+            if (relationclassInstances instanceof BaseError) return relationclassInstances;
 
-            return await Instance_objects_connection.deleteCollectionObject(
-                client,
-                portInstances,
-                userUuid
-            );
+            // Deleted one at a time through deleteByUuid rather than as a
+            // collection, so that each relation takes its bendpoints with it.
+            const removed = new Set<UUID>();
+            for (const relationclassInstance of relationclassInstances) {
+                const deleted = await this.deleteByUuid(
+                    client,
+                    relationclassInstance.get_uuid(),
+                    userUuid
+                );
+                if (deleted instanceof BaseError) return deleted;
+                if (Array.isArray(deleted)) {
+                    for (const uuid of deleted) removed.add(uuid);
+                }
+            }
+            return [...removed];
         } catch (err) {
             throw new Error(
                 `Error deleting the relationclass for the parent ${parentUuid}: ${err}`

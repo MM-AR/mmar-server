@@ -339,55 +339,55 @@ describe("Instance attributes tests", function () {
                                 uuid: uuids.row1col1Uuid,
                                 uuid_attribute: uuids.attributeColumn1Uuid,
                                 value: "value row1 col1",
-                                table_row: 1,
+                                table_row: 0,
                             },
                             {
                                 uuid: uuids.row1col2Uuid,
                                 uuid_attribute: uuids.attributeColumn2Uuid,
                                 value: "value row1 col2",
-                                table_row: 1,
+                                table_row: 0,
                             },
                             {
                                 uuid: uuids.row1col3Uuid,
                                 uuid_attribute: uuids.attributeColumn3Uuid,
                                 value: "value row1 col3",
-                                table_row: 1,
+                                table_row: 0,
                             },
                             {
                                 uuid: uuids.row2col1Uuid,
                                 uuid_attribute: uuids.attributeColumn1Uuid,
                                 value: "value row2 col1",
-                                table_row: 2,
+                                table_row: 1,
                             },
                             {
                                 uuid: uuids.row2col2Uuid,
                                 uuid_attribute: uuids.attributeColumn2Uuid,
                                 value: "value row2 col2",
-                                table_row: 2,
+                                table_row: 1,
                             },
                             {
                                 uuid: uuids.row2col3Uuid,
                                 uuid_attribute: uuids.attributeColumn3Uuid,
                                 value: "value row2 col3",
-                                table_row: 2,
+                                table_row: 1,
                             },
                             {
                                 uuid: uuids.row3col1Uuid,
                                 uuid_attribute: uuids.attributeColumn1Uuid,
                                 value: "value row3 col1",
-                                table_row: 3,
+                                table_row: 2,
                             },
                             {
                                 uuid: uuids.row3col2Uuid,
                                 uuid_attribute: uuids.attributeColumn2Uuid,
                                 value: "value row3 col2",
-                                table_row: 3,
+                                table_row: 2,
                             },
                             {
                                 uuid: uuids.row3col3Uuid,
                                 uuid_attribute: uuids.attributeColumn3Uuid,
                                 value: "value row3 col3",
-                                table_row: 3,
+                                table_row: 2,
                             },
                         ],
                     },
@@ -494,6 +494,47 @@ describe("Instance attributes tests", function () {
             });
             expect(res1.body.table_attributes[8]).to.deep.include({
                 uuid: uuids.row3col3Uuid,
+            });
+        });
+    });
+
+    describe("PATCH Instance attributes", function () {
+        // The route answered 500 for everyone, the scene owner included, because the
+        // handler tested its result with Array.isArray and update() returns a single
+        // AttributeInstance. Nothing covered it, so nothing caught it.
+        it(`Should patch and return the attribute ${uuids.attributeInstance2Uuid}`, async function () {
+            const res1 = await server
+                .patch(`/instances/attributesInstances/${uuids.attributeInstance2Uuid}`)
+                .set("content-type", "application/json")
+                .set("accept", "application/json")
+                .set("Cookie", "authcookie=" + token)
+                .send({
+                    uuid: uuids.attributeInstance2Uuid,
+                    uuid_attribute: uuids.attributeUuid,
+                    assigned_uuid_scene_instance: uuids.sceneInstanceUuid,
+                    value: "patched attribute value",
+                });
+            expect(res1).to.exist;
+            expect(res1.status).to.equal(200);
+            expect(res1.body).to.deep.include({
+                uuid: uuids.attributeInstance2Uuid,
+                uuid_attribute: uuids.attributeUuid,
+                value: "patched attribute value",
+            });
+        });
+
+        // A 200 that wrote nothing would satisfy the test above on its own.
+        it("Should have persisted what the patch answered", async function () {
+            const res1 = await server
+                .get(`/instances/attributesInstances/${uuids.attributeInstance2Uuid}`)
+                .set("content-type", "application/json")
+                .set("accept", "application/json")
+                .set("Cookie", "authcookie=" + token);
+            expect(res1).to.exist;
+            expect(res1.status).to.equal(200);
+            expect(res1.body).to.deep.include({
+                uuid: uuids.attributeInstance2Uuid,
+                value: "patched attribute value",
             });
         });
     });

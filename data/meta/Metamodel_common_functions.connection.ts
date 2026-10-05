@@ -40,7 +40,7 @@ class Metamodel_common_functionsConnection {
         client: PoolClient,
         deletionQuery: string,
         uuidFilter?: UUID,
-        userUuid?: UUID
+        _userUuid?: UUID
     ): Promise<UUID[] | undefined | BaseError> {
         try {
             let res_uuid: Array<{ uuid_instance_object: UUID }> = [];
@@ -261,9 +261,7 @@ class Metamodel_common_functionsConnection {
             const query_getType = "SELECT 'metaobject' AS table_name FROM metaobject WHERE uuid = $1 UNION SELECT 'instanceobject' AS table_name FROM instance_object WHERE uuid = $1";
             const res_query = await client.query(query_getType, [objectUuid]);
             if (res_query.rowCount == 1) {
-                const test = res_query.rows[0].table_name as string;
-                console.log(test);
-                return test
+                return res_query.rows[0].table_name as string;
             }
             return undefined;
         } catch (err) {

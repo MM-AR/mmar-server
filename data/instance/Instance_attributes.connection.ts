@@ -4,9 +4,9 @@ import {queries} from "../../index";
 import {CRUD} from "../common/crud.interface";
 import Instance_objects_connection from "./Instance_objects.connection";
 import Metamodel_common_functions from "../meta/Metamodel_common_functions.connection";
-import instance_rolesConnection from "./Instance_roles.connection";
 import Instance_rolesConnection from "./Instance_roles.connection";
 import {BaseError, HTTP403NORIGHT} from "../services/middleware/error_handling/standard_errors.middleware";
+import {attribute_table_columns} from "../services/rule_engine/instance_rule_engine/Metamodel_probe";
 
 /**
  * @description - This is the class that handles the CRUD operations for the AttributeInstances.
@@ -14,7 +14,157 @@ import {BaseError, HTTP403NORIGHT} from "../services/middleware/error_handling/s
  * @class Instance_attributesConnection
  * @implements {CRUD}
  */
+/**
+ * @description - Which column links an attribute instance to its parent, per kind
+ * of parent. Interpolated into the batch query below, so it is a closed set of
+ * literals here and never a value taken from a request.
+ */
+const PARENT_COLUMN = {
+    scene_type: "assigned_uuid_scene_instance",
+    class: "assigned_uuid_class_instance",
+    relationclass: "assigned_uuid_class_instance",
+    port: "assigned_uuid_port_instance",
+} as const;
+
+/**
+ * @description - The kinds of object an attribute instance can hang from.
+ */
+export type AttributeParentType = keyof typeof PARENT_COLUMN;
+
 class Instance_attributesConnection implements CRUD {
+    /**
+     * @description - Read every attribute instance of many parents at once.
+     *
+     * The per-parent path costs one query to list the children and then two more
+     * for each of them, so a scene of 150 objects holding seven attributes each
+     * spent well over two thousand round trips on this alone. Here each level of
+     * the tree is one query no matter how wide it is: the attributes, then their
+     * table cells, then the roles they point at.
+     *
+     * The result is keyed by parent uuid, and a parent with no attributes is
+     * absent rather than present with an empty list.
+     * @param {PoolClient} client - The client to the database.
+     * @param {UUID[]} parentUuids - The parents to load the attributes of.
+     * @param {AttributeParentType} parentType - What kind of object those parents are.
+     * @returns {Promise<Map<UUID, AttributeInstance[]>>} - The attributes per parent.
+     */
+    async getAllByParentUuids(
+        client: PoolClient,
+        parentUuids: UUID[],
+        parentType: AttributeParentType
+    ): Promise<Map<UUID, AttributeInstance[]>> {
+        const byParent = new Map<UUID, AttributeInstance[]>();
+        if (parentUuids.length === 0) return byParent;
+
+        const parentColumn = PARENT_COLUMN[parentType];
+        if (!parentColumn) {
+            throw new Error(
+                `Error the type ${parentType} cannot be a parent for an Attribute`
+            );
+        }
+
+        try {
+            const res = await client.query(
+                `SELECT io.*, ai.*
+                 FROM instance_object io
+                          JOIN attribute_instance ai ON ai.uuid_instance_object = io.uuid
+                 WHERE ai.${parentColumn} = ANY ($1::uuid[])`,
+                [parentUuids]
+            );
+
+            const attributes = await this.hydrate(client, res.rows);
+            for (const [row, attribute] of attributes) {
+                const parent = row[parentColumn] as UUID;
+                const existing = byParent.get(parent);
+                if (existing) existing.push(attribute);
+                else byParent.set(parent, [attribute]);
+            }
+            return byParent;
+        } catch (err) {
+            throw new Error(
+                `Error getting the attributes for the parents ${parentUuids.join(", ")}: ${err}`
+            );
+        }
+    }
+
+    /**
+     * @description - Turn rows of attribute_instance into AttributeInstances, with
+     * their table cells and their originating roles filled in.
+     *
+     * Tables nest, so the cells are read one level at a time, each level in a
+     * single query, until a level comes back empty. The roles of every attribute
+     * at every level are then read together.
+     * @param {PoolClient} client - The client to the database.
+     * @param {Record<string, unknown>[]} rows - The joined instance_object/attribute_instance rows.
+     * @returns {Promise<Array<[Record<string, unknown>, AttributeInstance]>>} - Each row with the object built from it.
+     */
+    private async hydrate(
+        client: PoolClient,
+        rows: Record<string, unknown>[]
+    ): Promise<Array<[Record<string, unknown>, AttributeInstance]>> {
+        const built: Array<[Record<string, unknown>, AttributeInstance]> = [];
+        const byUuid = new Map<UUID, AttributeInstance>();
+        const rolesWanted = new Map<UUID, AttributeInstance[]>();
+
+        /** Record a row, remembering the role it points at, if any. */
+        const take = (row: Record<string, unknown>): AttributeInstance => {
+            const attribute = AttributeInstance.fromJS(row) as AttributeInstance;
+            byUuid.set(attribute.get_uuid(), attribute);
+            const role = row.role_instance_from as UUID | null;
+            if (role !== null && role !== undefined) {
+                const waiting = rolesWanted.get(role);
+                if (waiting) waiting.push(attribute);
+                else rolesWanted.set(role, [attribute]);
+            }
+            return attribute;
+        };
+
+        for (const row of rows) built.push([row, take(row)]);
+
+        // Descend the table nesting one level at a time. Cells come in table order - by
+        // row, then by the sequence of their column in the table's attribute type - which
+        // add_table_attributes keeps per table (see Instance_tables in gds).
+        let frontier = built.map(([, attribute]) => attribute.get_uuid());
+        while (frontier.length > 0) {
+            const cells = await client.query(
+                `SELECT io.*, ai.*
+                 FROM instance_object io
+                          JOIN attribute_instance ai ON ai.uuid_instance_object = io.uuid
+                          JOIN attribute_instance tbl ON tbl.uuid_instance_object = ai.table_attribute_reference
+                          JOIN attribute tbl_attribute ON tbl_attribute.uuid_metaobject = tbl.uuid_attribute
+                          LEFT JOIN has_table_attribute col
+                                    ON col.uuid_attribute_type = tbl_attribute.attribute_type_uuid
+                                        AND col.uuid_attribute = ai.uuid_attribute
+                 WHERE ai.table_attribute_reference = ANY ($1::uuid[])
+                 ORDER BY ai.table_row, col.sequence, ai.uuid_attribute`,
+                [frontier]
+            );
+            if (cells.rowCount === 0) break;
+
+            for (const row of cells.rows) {
+                const cell = take(row);
+                byUuid
+                    .get(row.table_attribute_reference as UUID)
+                    ?.add_table_attributes(cell);
+            }
+            frontier = cells.rows.map((row) => row.uuid_instance_object as UUID);
+        }
+
+        if (rolesWanted.size > 0) {
+            const roles = await Instance_rolesConnection.getByUuids(client, [
+                ...rolesWanted.keys(),
+            ]);
+            for (const [uuid, waiting] of rolesWanted) {
+                const role = roles.get(uuid);
+                if (role) for (const attribute of waiting) {
+                    attribute.set_role_instance_from(role);
+                }
+            }
+        }
+
+        return built;
+    }
+
     /**
      * @description - This function get an attribute instance by its uuid.
      * @param {PoolClient} client - The client to the database.
@@ -36,14 +186,12 @@ class Instance_attributesConnection implements CRUD {
             const attribute_query = queries.getQuery_get("instance_attribute_uuid_query");
             let newAttribute;
 
-            if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
-                const res = await client.query(read_check, [attributeUuid, userUuid]);
-                if (res.rowCount == 0) {
-                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the attribute instance ${attributeUuid}`);
-                }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
 
-            }
 
             const res_attribute = await client.query(attribute_query, [attributeUuid]);
 
@@ -59,7 +207,7 @@ class Instance_attributesConnection implements CRUD {
                 if (res_attribute.rows[0].role_instance_from !== null) {
                     const uuid_role_instance_from =
                         res_attribute.rows[0].role_instance_from;
-                    const role_instance_from = await instance_rolesConnection.getByUuid(
+                    const role_instance_from = await Instance_rolesConnection.getByUuid(
                         client,
                         uuid_role_instance_from,
                         userUuid
@@ -295,8 +443,23 @@ class Instance_attributesConnection implements CRUD {
                 await this.getByUuid(client, attrUuidToUpdate)
             ) as AttributeInstance;
 
-            const tableAttrs = newAttributeInstance.get_table_attributes();
-            if (tableAttrs && tableAttrs.length > 0) {
+            const tableAttrs = newAttributeInstance.get_table_attributes() ?? [];
+
+            // Writing a table replaces its cells (see Instance_tables in gds): a stored cell
+            // that is no longer sent was removed, with its row or by an undo, and goes.
+            // Deleted first, so a new cell can take the row and column of a removed one.
+            // A nested table in a removed cell goes with it, by the foreign key's cascade.
+            const tableColumns = await attribute_table_columns(client, current_attr.get_uuid_attribute());
+            if (tableColumns.length > 0) {
+                const sentCells = new Set(tableAttrs.map((cell) => cell.uuid));
+                for (const storedCell of current_attr.get_table_attributes() ?? []) {
+                    if (!sentCells.has(storedCell.get_uuid())) {
+                        await Instance_objects_connection.deleteByUuid(client, storedCell.get_uuid(), userUuid);
+                    }
+                }
+            }
+
+            if (tableAttrs.length > 0) {
                 for (const cellToUpdateRaw of tableAttrs) {
                     const cellToUpdate = AttributeInstance.fromJS(
                         cellToUpdateRaw

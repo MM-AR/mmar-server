@@ -270,7 +270,7 @@
     },
     {
       "name": "get_attributes_table_from_attribute_uuid",
-      "query": "select * from attribute_instance where table_attribute_reference = $1 order by table_row"
+      "query": "select ai.* from attribute_instance ai join attribute_instance tbl on tbl.uuid_instance_object = ai.table_attribute_reference join attribute tbl_attribute on tbl_attribute.uuid_metaobject = tbl.uuid_attribute left join has_table_attribute col on col.uuid_attribute_type = tbl_attribute.attribute_type_uuid and col.uuid_attribute = ai.uuid_attribute where ai.table_attribute_reference = $1 order by ai.table_row, col.sequence, ai.uuid_attribute"
     },
     {
       "name": "get_relationclass_if_role_from_or_to",
@@ -278,39 +278,79 @@
     },
     {
       "name": "get_all_delete_right_uuid_from_user_group",
-      "query": "select hdr.uuid_metaobject, hdr.uuid_instance_object from user_group join has_delete_right hdr on user_group.uuid_metaobject = hdr.uuid_user_group and hdr.uuid_user_group = $1 "
+      "query": "select hdr.uuid_metaobject from user_group join has_delete_right hdr on user_group.uuid_metaobject = hdr.uuid_user_group and hdr.uuid_user_group = $1 "
     },
     {
       "name": "addon_right_read_check",
-      "query": "AND (EXISTS(SELECT 1 from has_read_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where (har.uuid_instance_object = $1 or har.uuid_metaobject = $1) and huug.uuid_user = $2) OR ( $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240' )) "
+      "query": "AND (EXISTS(SELECT 1 from has_read_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where har.uuid_metaobject = $1 and huug.uuid_user = $2) OR public.is_administrator($2)) "
     },
     {
       "name": "read_check",
-      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_read_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE (har.uuid_instance_object = $1 OR har.uuid_metaobject = $1) AND huug.uuid_user = $2) OR $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240';"
+      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_read_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE har.uuid_metaobject = $1 AND huug.uuid_user = $2) OR public.is_administrator($2);"
     },
     {
       "name": "addon_right_write_check",
-      "query": "AND (EXISTS(SELECT 1 from has_write_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where (har.uuid_instance_object = $1 or har.uuid_metaobject = $1) and huug.uuid_user = $2) OR ( $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240' )) "
+      "query": "AND (EXISTS(SELECT 1 from has_write_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where har.uuid_metaobject = $1 and huug.uuid_user = $2) OR public.is_administrator($2)) "
     },
     {
       "name": "write_check",
-      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_write_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE (har.uuid_instance_object = $1 OR har.uuid_metaobject = $1) AND huug.uuid_user = $2) OR $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240';"
+      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_write_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE har.uuid_metaobject = $1 AND huug.uuid_user = $2) OR public.is_administrator($2);"
     },
     {
       "name": "addon_right_delete_check",
-      "query": "AND (EXISTS(SELECT 1 from has_delete_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where (har.uuid_instance_object = $1 or har.uuid_metaobject = $1) and huug.uuid_user = $2) OR ( $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240' )) returning * ;"
+      "query": "AND (EXISTS(SELECT 1 from has_delete_right har join has_user_user_group huug on har.uuid_user_group = huug.uuid_user_group where har.uuid_metaobject = $1 and huug.uuid_user = $2) OR public.is_administrator($2)) returning * ;"
     },
     {
       "name": "delete_check",
-      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_delete_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE (har.uuid_instance_object = $1 OR har.uuid_metaobject = $1) AND huug.uuid_user = $2) OR $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240';"
+      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM has_delete_right har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE har.uuid_metaobject = $1 AND huug.uuid_user = $2) OR public.is_administrator($2);"
     },
     {
       "name": "meta_create_check",
-      "query": "SELECT 1 WHERE EXISTS (SELECT 1 FROM user_group ug JOIN has_user_user_group huug ON ug.uuid_metaobject = huug.uuid_user_group WHERE ug.$1 = true AND huug.uuid_user = $2) OR $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240';"
+      "query": "SELECT 1 WHERE EXISTS (SELECT 1 FROM user_group ug JOIN has_user_user_group huug ON ug.uuid_metaobject = huug.uuid_user_group WHERE ug.$1 = true AND huug.uuid_user = $2) OR public.is_administrator($2);"
     },
     {
       "name": "instanciate_check",
-      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM can_create_instances har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE har.uuid_metaobject = $1 AND huug.uuid_user = $2) OR $2 = 'ff892138-77e0-47fe-a323-3fe0e1bf0240';"
+      "query": "SELECT 1 WHERE EXISTS ( SELECT 1 FROM can_create_instances har JOIN has_user_user_group huug ON har.uuid_user_group = huug.uuid_user_group WHERE har.uuid_metaobject = $1 AND huug.uuid_user = $2) OR public.is_administrator($2);"
+    },
+    {
+      "name": "instance_object_owning_scene_query",
+      "query": "WITH RECURSIVE owner_walk(uuid) AS (SELECT $1::uuid UNION SELECT COALESCE(ats.uuid_scene_instance, pi.uuid_scene_instance, pi.uuid_class_instance, ai.assigned_uuid_scene_instance, ai.assigned_uuid_class_instance, ai.assigned_uuid_port_instance, ai.role_instance_from, ri.uuid_has_reference_scene_instance, ri.uuid_has_reference_class_instance, ri.uuid_has_reference_relationclass_instance, ri.uuid_has_reference_port_instance, ri.uuid_has_reference_attribute_instance) FROM owner_walk ow LEFT JOIN assigned_to_scene ats ON ats.uuid_class_instance = ow.uuid LEFT JOIN port_instance pi ON pi.uuid_instance_object = ow.uuid LEFT JOIN attribute_instance ai ON ai.uuid_instance_object = ow.uuid LEFT JOIN role_instance ri ON ri.uuid_instance_object = ow.uuid) SELECT si.uuid_instance_object AS uuid_scene_instance FROM scene_instance si JOIN owner_walk ow ON ow.uuid = si.uuid_instance_object LIMIT 1;"
+    },
+    {
+      "name": "sceneinstance_exist_check",
+      "query": "SELECT 1 FROM scene_instance WHERE uuid_instance_object = $1;"
+    },
+    {
+      "name": "sceneinstance_read_check",
+      "query": "SELECT 1 FROM scene_instance_user_access WHERE (uuid_scene_instance = $1 AND uuid_user = $2 AND read_access = true) OR public.is_administrator($2);"
+    },
+    {
+      "name": "sceneinstance_edit_check",
+      "query": "SELECT 1 FROM scene_instance_user_access WHERE (uuid_scene_instance = $1 AND uuid_user = $2 AND edit_access = true) OR public.is_administrator($2);"
+    },
+    {
+      "name": "sceneinstance_delete_check",
+      "query": "SELECT 1 FROM scene_instance_user_access WHERE (uuid_scene_instance = $1 AND uuid_user = $2 AND delete_access = true) OR public.is_administrator($2);"
+    },
+    {
+      "name": "list_scene_instance_access",
+      "query": "SELECT siua.uuid_user, u.username, m.name AS displayname, siua.read_access, siua.edit_access, siua.delete_access FROM scene_instance_user_access siua JOIN users u ON u.uuid_metaobject = siua.uuid_user JOIN metaobject m ON m.uuid = u.uuid_metaobject WHERE siua.uuid_scene_instance = $1 ORDER BY u.username;"
+    },
+    {
+      "name": "get_user_by_username",
+      "query": "SELECT u.uuid_metaobject AS uuid, u.username, m.name AS displayname FROM users u JOIN metaobject m ON m.uuid = u.uuid_metaobject WHERE u.username = $1 LIMIT 1;"
+    },
+    {
+      "name": "scene_instance_access_for_user",
+      "query": "SELECT read_access, edit_access, delete_access FROM scene_instance_user_access WHERE uuid_scene_instance = $1 AND uuid_user = $2 LIMIT 1;"
+    },
+    {
+      "name": "is_user_delete_owner",
+      "query": "SELECT COALESCE((SELECT delete_access FROM scene_instance_user_access WHERE uuid_scene_instance = $1 AND uuid_user = $2), false) OR public.is_administrator($2) AS allowed;"
+    },
+    {
+      "name": "is_user_view_owner",
+      "query": "SELECT COALESCE((SELECT read_access FROM scene_instance_user_access WHERE uuid_scene_instance = $1 AND uuid_user = $2), false) OR public.is_administrator($2) AS allowed;"
     }
   ]
 }

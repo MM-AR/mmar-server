@@ -1,14 +1,13 @@
 import {RequestHandler} from "express";
-import {database_connection} from "../../index";
 import {ClassInstance} from "../../../mmar-global-data-structure";
 
 import {
-    API404Error,
     BaseError,
     HTTP500Error,
 } from "../../data/services/middleware/error_handling/standard_errors.middleware";
-import {filter_object} from "../../data/services/middleware/object_filter";
 import Instance_bendpoint_connection from "../../data/instance/Instance_bendpoints.connection";
+import { requireUser } from "../../data/services/middleware/auth.middleware";
+import { withTransaction } from "../../data/services/transaction";
 
 /**
  * @classdesc - This class is used to handle all the requests for the bendpoint instances.
@@ -22,42 +21,27 @@ class Instance_bendpointsController {
      * @param res
      * @param next
      * @yield {status: 200, body: {ClassInstance[]}} - The bendpoint instances of the relationclass instance.
-     * @throws {API404Error} - If the relationclass instance is not found.
+     * @throws {HTTP404Error} - If the relationclass instance is not found.
      * @throws {HTTP500Error} - If the acquisition of the bendpoint instances fails.
      * @memberof Instance_bendpoint_controller
      * @method
      */
-    get_bendpoint_instances_for_relationclass: RequestHandler = async (
-        req,
-        res,
-        next
-    ) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Instance_bendpoint_connection.getAllByParentUuid(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
+    get_bendpoint_instances_for_relationclass: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Instance_bendpoint_connection.getAllByParentUuid(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to find the bendpoint instances for the relationclass ${req.params.uuid}.`
             );
-            if (Array.isArray(sc)) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to find the bendpoint instances for the relationclass ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 
     /**
      * @description - Get a specific bendpoint instance by its uuid.
@@ -65,38 +49,27 @@ class Instance_bendpointsController {
      * @param res
      * @param next
      * @yield {status: 200, body: {ClassInstance}} - The bendpoint instance.
-     * @throws {API404Error} - If the bendpoint instance is not found.
+     * @throws {HTTP404Error} - If the bendpoint instance is not found.
      * @throws {HTTP500Error} - If the acquisition of the bendpoint instance fails.
      * @memberof Instance_bendpoint_controller
      * @method
      */
-    get_bendpoint_instance_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Instance_bendpoint_connection.getByUuid(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
+    get_bendpoint_instance_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Instance_bendpoint_connection.getByUuid(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (sc instanceof ClassInstance) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to find the bendpoint instance ${req.params.uuid}.`
             );
-            if (sc instanceof ClassInstance) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to find the bendpoint instance ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 
     /**
      * @description - Modify a specific bendpoint instance by its uuid.
@@ -109,36 +82,24 @@ class Instance_bendpointsController {
      * @memberof Instance_bendpoint_controller
      * @method
      */
-    patch_bendpoint_instance_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-
-            const newBendpoint = ClassInstance.fromJS(req.body) as ClassInstance;
-            const sc = await Instance_bendpoint_connection.update(
-                client,
-                req.params.uuid,
-                newBendpoint,
-                req.body.tokendata.uuid
+    patch_bendpoint_instance_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const newBendpoint = ClassInstance.fromJS(req.body) as ClassInstance;
+        const sc = await Instance_bendpoint_connection.update(
+            client,
+            req.params.uuid,
+            newBendpoint,
+            requireUser(req).uuid
+        );
+        if (sc instanceof ClassInstance) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to update the bendpoint instance ${req.params.uuid}.`
             );
-            if (sc instanceof ClassInstance) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to update the bendpoint instance ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 
     /**
      * @description - Create a new bendpoint instance by its uuid.
@@ -151,34 +112,22 @@ class Instance_bendpointsController {
      * @memberof Instance_bendpoint_controller
      * @method
      */
-    post_bendpoint_instance_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-
-            const newClass = ClassInstance.fromJS(req.body) as ClassInstance;
-            newClass.uuid = req.params.uuid;
-            const sc = await Instance_bendpoint_connection.create(
-                client,
-                newClass,
-                req.body.tokendata.uuid
-            );
-            if (Array.isArray(sc)) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to create the bendpoint instance for the relationclass ${req.params.uuid}.`);
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+    post_bendpoint_instance_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const newClass = ClassInstance.fromJS(req.body) as ClassInstance;
+        newClass.uuid = req.params.uuid;
+        const sc = await Instance_bendpoint_connection.create(
+            client,
+            newClass,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to create the bendpoint instance for the relationclass ${req.params.uuid}.`);
         }
-    };
+    }, { status: 201 });
 
     /**
      * @description - Delete a specific bendpoint instance by its uuid.
@@ -190,37 +139,22 @@ class Instance_bendpointsController {
      * @memberof Instance_bendpoint_controller
      * @method
      */
-    delete_bendpoint_instances_by_uuid: RequestHandler = async (
-        req,
-        res,
-        next
-    ) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Instance_bendpoint_connection.deleteByUuid(
-                client,
-                req.params.uuid
+    delete_bendpoint_instances_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Instance_bendpoint_connection.deleteByUuid(
+            client,
+            req.params.uuid
+        );
+        if (Array.isArray(sc)) {
+            //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to delete the bendpoint instance ${req.params.uuid}.`
             );
-            if (Array.isArray(sc)) {
-                //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to delete the bendpoint instance ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 }
 
 export default new Instance_bendpointsController();

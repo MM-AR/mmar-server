@@ -41,13 +41,11 @@ class Instance_classesConnection implements CRUD {
             let returnClass;
 
 
-            if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
-                const res = await client.query(read_check, [instanceClassUuid, userUuid]);
-                if (res.rowCount == 0) {
-                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the class instance ${instanceClassUuid}`);
-                }
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
 
 
             const res_classes = await client.query(classes_query, [instanceClassUuid]);
@@ -94,22 +92,50 @@ class Instance_classesConnection implements CRUD {
     async getAllByParentUuid(
         client: PoolClient,
         parentUUID: UUID,
-        userUuid?: UUID
+        _userUuid?: UUID
     ): Promise<ClassInstance[] | BaseError> {
         try {
-            const classes_query = queries.getQuery_get(
-                "instance_classes_for_scene_instance_query"
+            // The classes of the scene and then, for all of them at once, their
+            // attributes and their ports. Calling getByUuid per class instead cost
+            // four queries per class and two more per attribute, which is where the
+            // bulk of a scene read used to go.
+            const res_classes = await client.query(
+                `SELECT io.*, ci.*
+                 FROM scene_instance si
+                          JOIN assigned_to_scene ats ON ats.uuid_scene_instance = si.uuid_instance_object
+                          JOIN class_instance ci ON ci.uuid_instance_object = ats.uuid_class_instance
+                          JOIN instance_object io ON io.uuid = ci.uuid_instance_object
+                 WHERE ci.uuid_relationclass IS NULL
+                   AND si.uuid_instance_object = $1`,
+                [parentUUID]
             );
-            const returnClasses: ClassInstance[] = new Array<ClassInstance>();
-            const res_classes = await client.query(classes_query, [parentUUID]);
-            for (const cl of res_classes.rows) {
-                const newClass = await this.getByUuid(
-                    client,
-                    cl.uuid_instance_object,
-                    userUuid
-                );
-                if (newClass instanceof ClassInstance) returnClasses.push(newClass);
+            if (res_classes.rowCount === 0) return [];
 
+            const returnClasses = res_classes.rows.map(
+                (row) => ClassInstance.fromJS(row) as ClassInstance
+            );
+            const classUuids = returnClasses.map((cl) => cl.get_uuid());
+
+            const [attributes, ports] = await Promise.all([
+                Instance_attribute_connection.getAllByParentUuids(
+                    client,
+                    classUuids,
+                    "class"
+                ),
+                Instance_port_connection.getAllByParentUuids(
+                    client,
+                    classUuids,
+                    "class"
+                ),
+            ]);
+
+            for (const currentClass of returnClasses) {
+                currentClass.set_attribute_instances(
+                    attributes.get(currentClass.get_uuid()) ?? []
+                );
+                currentClass.set_port_instances(
+                    ports.get(currentClass.get_uuid()) ?? []
+                );
             }
             return returnClasses;
         } catch (err) {
@@ -349,10 +375,13 @@ class Instance_classesConnection implements CRUD {
                 const createdClass = await this.create(client, currentClass, userUuid);
                 if (createdClass instanceof ClassInstance) {
                     if (sceneInstanceUUID) {
+                        // Attaching a class instance to a scene it is already in is
+                        // not a failure; see the note in postRelationClassInstance.
                         await client.query(
                             `
                                 INSERT INTO assigned_to_scene (uuid_class_instance, uuid_scene_instance)
-                                VALUES ($1, $2);`,
+                                VALUES ($1, $2)
+                                ON CONFLICT DO NOTHING;`,
                             [createdClass.get_uuid(), sceneInstanceUUID]
                         );
                     }

@@ -1,6 +1,8 @@
 import {RequestHandler} from "express";
 import {RoleInstance, UUID} from "../../../../../mmar-global-data-structure";
-import {database_connection} from "../../../../index";
+import {PoolClient} from "pg";
+import {with_client} from "../../database_connection";
+import {route_params} from "../../middleware/uuid_params.middleware";
 import {applyDeletionRules, applyRules} from "./Instance_roles.rules";
 
 /**
@@ -28,24 +30,20 @@ export const verif_role_instance_body: RequestHandler = async (
  * @param roleToTest
  */
 export async function verif_inner_role_instance_body (
-  roleToTest: RoleInstance | RoleInstance[]
+  roleToTest: RoleInstance | RoleInstance[],
+  client?: PoolClient
 ) {
-  const client = await database_connection.getPool().connect();
-
-  try {
+  // The rule engine nests, so the connection is threaded down rather than a new
+  // one taken at every level: see with_client.
+  return await with_client(client, async (c) => {
     if (roleToTest instanceof RoleInstance) {
-      await applyRules(client, roleToTest);
+      await applyRules(c, roleToTest);
     } else {
-      for (const roleInstanceToTestIntern of roleToTest) {
-        await applyRules(client, roleInstanceToTestIntern);
+      for (const element of roleToTest) {
+        await applyRules(c, element);
       }
     }
-    // eslint-disable-next-line no-useless-catch
-  } catch (err) {
-    throw err;
-  } finally {
-    client.release();
-  }
+  });
 }
 
 /**
@@ -59,7 +57,7 @@ export const verif_role_instance_deletion: RequestHandler = async (
   res,
   next
 ) => {
-  await verif_inner_role_instance_deletion(req.params.uuid);
+  await verif_inner_role_instance_deletion(route_params(req).uuid);
   next();
 };
 
@@ -68,16 +66,10 @@ export const verif_role_instance_deletion: RequestHandler = async (
  * @param roleInstanceUuidToDelete
  */
 export async function verif_inner_role_instance_deletion(
-  roleInstanceUuidToDelete: UUID
+  roleInstanceUuidToDelete: UUID,
+  client?: PoolClient
 ) {
-  const client = await database_connection.getPool().connect();
-  try {
-    await applyDeletionRules(client, roleInstanceUuidToDelete);
-
-    // eslint-disable-next-line no-useless-catch
-  } catch (err) {
-    throw err;
-  } finally {
-    client.release();
-  }
+  return await with_client(client, async (c) => {
+    await applyDeletionRules(c, roleInstanceUuidToDelete);
+  });
 }

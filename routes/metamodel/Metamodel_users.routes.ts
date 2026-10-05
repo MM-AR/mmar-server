@@ -1,8 +1,17 @@
 import { Router } from "express";
-import { authenticate_token } from "../../data/services/middleware/auth.middleware";
+import {
+  authenticate_token,
+  require_administrator,
+} from "../../data/services/middleware/auth.middleware";
 import Users_controller from "../../controllers/meta/Users_controller";
+import User_lookup_controller from "../../controllers/meta/User_lookup_controller";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
 
 const usersRouter: Router = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(usersRouter);
 
 usersRouter.get(
   /*
@@ -95,7 +104,7 @@ usersRouter.get(
         "schema": {
           "type": "array", 
           "items": {
-            "$ref": "#/components/schemas/User"   
+            "$ref": "#/components/schemas/User"   
  
           }
         }
@@ -106,6 +115,39 @@ usersRouter.get(
   "/", 
   authenticate_token, 
   Users_controller.get_all_users
+);
+
+usersRouter.get(
+  /*
+  #swagger.tags = ["Users"]
+  #swagger.summary = "Look up a user by exact username (returns uuid, username, displayname only)"
+  #swagger.responses[200] = {
+    "description": "Successful operation",
+    "content": {
+      "application/json": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "uuid": { "type": "string" },
+            "username": { "type": "string" },
+            "displayname": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+  #swagger.responses[404] = {
+    "description": "User not found",
+    "content": {
+      "application/json": {
+        "schema": { "$ref": "#/components/schemas/Error" }
+      }
+    }
+  }
+  */
+  "/byUsername/:username",
+  authenticate_token,
+  User_lookup_controller.get_user_by_username,
 );
 
 usersRouter.delete(
@@ -182,6 +224,75 @@ usersRouter.patch(
   Users_controller.patch_user_by_uuid,
 );
 
+usersRouter.post(
+  /*
+  #swagger.tags = ["Users"]
+  #swagger.summary = "Set the password of a user. Administrators only."
+  #swagger.requestBody = {
+    "description": "The new password",
+    "content": {
+      "application/json": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "password": { "type": "string" }
+          },
+          "required": ["password"]
+        }
+      }
+    },
+    "required": true
+  }
+  #swagger.responses[200] = {
+    "description": "The user, which never carries the password",
+    "content": {
+      "application/json": {
+        "schema": {
+          "$ref": "#/components/schemas/User"
+        }
+      }
+    }
+  }
+  #swagger.responses[400] = {
+    "description": "No password supplied, or one too long to hash",
+    "content": {
+      "application/json": {
+        "schema": {
+          "$ref": "#/components/schemas/Error"
+        }
+      }
+    }
+  }
+  #swagger.responses[401] = {
+    "description": "No valid token supplied"
+  }
+  #swagger.responses[403] = {
+    "description": "The caller is not an administrator",
+    "content": {
+      "application/json": {
+        "schema": {
+          "$ref": "#/components/schemas/Error"
+        }
+      }
+    }
+  }
+  #swagger.responses[404] = {
+    "description": "User not found",
+    "content": {
+      "application/json": {
+        "schema": {
+          "$ref": "#/components/schemas/Error"
+        }
+      }
+    }
+  }
+  */
+  "/:uuid/password",
+  authenticate_token,
+  require_administrator,
+  Users_controller.set_user_password,
+);
+
 usersRouter.get(
   /*
   #swagger.tags = ["Users"]
@@ -199,7 +310,7 @@ usersRouter.get(
       }
     }
   }
-  #swagger.responses[400]   
+  #swagger.responses[400]   
  = {
     "description": "Invalid UUID supplied",
     "content": {

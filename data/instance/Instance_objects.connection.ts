@@ -1,10 +1,10 @@
 import {PoolClient} from "pg";
 import {ObjectInstance, UUID} from "../../../mmar-global-data-structure";
 
-import {uuid} from "uuidv4";
+import {v4 as uuid} from "uuid";
 import {queries} from "../../index";
 import {CRUD} from "../common/crud.interface";
-import {BaseError, HTTP403NORIGHT} from "../services/middleware/error_handling/standard_errors.middleware";
+import {BaseError} from "../services/middleware/error_handling/standard_errors.middleware";
 
 /**
  * @description - This is the class that handles the CRUD operations for the Object Instances.
@@ -27,7 +27,7 @@ class Instance_objectsConnection implements CRUD {
     async getByUuid(
         client: PoolClient,
         objectUUID: UUID,
-        userUuid?: UUID
+        _userUuid?: UUID
     ): Promise<ObjectInstance | undefined | BaseError> {
         try {
 
@@ -35,20 +35,20 @@ class Instance_objectsConnection implements CRUD {
                 "instance_object_uuid_query"
             );
 
-            if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
-                const res = await client.query(read_check, [objectUUID, userUuid]);
-                if (res.rowCount == 0) {
-                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the instance object ${objectUUID}`);
-                }
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
 
             const res_object = await client.query(get_object_query, [objectUUID]);
             if (res_object.rowCount === 0) return undefined;
             return ObjectInstance.fromJS(res_object.rows[0]);
 
         } catch (err) {
-            await client.query("ROLLBACK");
+            // The transaction belongs to the caller: rolling it back from a read
+            // would undo work this function knows nothing about, and would leave
+            // the controller's own rollback running against a finished transaction.
             throw new Error(`Error getting the object ${objectUUID}: ${err}`);
         }
     }
@@ -68,18 +68,18 @@ class Instance_objectsConnection implements CRUD {
     async deleteByUuid(
         client: PoolClient,
         objectUUID: UUID,
-        userUUID?: UUID
+        _userUUID?: UUID
     ): Promise<UUID[] | undefined | BaseError> {
         try {
             const returnUuids: UUID[] = new Array<UUID>();
             const query_del = queries.getQuery_delete("delete_instance_object");
             const query_get = queries.getQuery_delete("get_cascaded_delete_object");
 
-            if (userUUID) {
-                const delete_check = queries.getQuery_get("delete_check");
-                const res = await client.query(delete_check, [objectUUID, userUUID]);
-                if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUUID} has no right to delete the instance object ${objectUUID}`);
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
 
             await client.query(query_del, [objectUUID]);
             const res_uuids = await client.query(query_get, [objectUUID]);
@@ -131,27 +131,26 @@ class Instance_objectsConnection implements CRUD {
             const search_instanceObject_query = queries.getQuery_rules(
                 "search_instanceobject"
             );
-            let query = `INSERT INTO instance_object (uuid)
-                         VALUES ('DEFAULT')
-                         RETURNING uuid`;
-            if (instanceObjectToAdd.get_uuid()) {
-                query = `INSERT INTO instance_object (uuid)
-                         VALUES ('${instanceObjectToAdd.get_uuid()}')
-                         RETURNING uuid`;
-            }
-            if (
-                typeof instanceObjectToAdd.get_uuid() &&
-                (
-                    await client.query(search_instanceObject_query, [
-                        instanceObjectToAdd.get_uuid(),
-                    ])
-                ).rowCount != 0
-            ) {
-                // if the object already exists we return undefined
-                return undefined;
+            const requested_uuid = instanceObjectToAdd.get_uuid();
+
+            if (requested_uuid) {
+                // The object already exists: undefined means "nothing was created",
+                // which the callers treat as a no-op rather than as a failure.
+                const existing = await client.query(search_instanceObject_query, [
+                    requested_uuid,
+                ]);
+                if (existing.rowCount !== 0) return undefined;
             }
 
-            const queryResult = await client.query(query);
+            // The uuid is supplied by the client, so it is bound as a parameter and
+            // never interpolated into the statement. COALESCE lets the column
+            // default generate one when the client did not propose any.
+            const queryResult = await client.query(
+                `INSERT INTO instance_object (uuid)
+                 VALUES (COALESCE($1::uuid, gen_random_uuid()))
+                 RETURNING uuid`,
+                [requested_uuid ?? null]
+            );
             if (queryResult.rowCount && queryResult.rowCount > 0) {
 
                 await this.update(client, queryResult.rows[0].uuid, instanceObjectToAdd, userUuid);
@@ -213,7 +212,7 @@ class Instance_objectsConnection implements CRUD {
         client: PoolClient,
         instanceObjectUUID: UUID,
         instanceObjectUpdated: ObjectInstance,
-        userUUID?: UUID
+        _userUUID?: UUID
     ): Promise<ObjectInstance | undefined | BaseError> {
         try {
 
@@ -234,11 +233,11 @@ class Instance_objectsConnection implements CRUD {
             ];
 
 
-            if (userUUID) {
-                const write_check = queries.getQuery_get("write_check");
-                const res = await client.query(write_check, [instanceObjectUUID, userUUID]);
-                if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUUID} has no right to update the instance object ${instanceObjectUUID}`);
-            }
+            // Authorization happens at the scene boundary, never per instance
+            // object: the routes that address this object by uuid resolve the
+            // scene instance that owns it and check that instead. Do not add a
+            // per-object right check here — it would also fire for every child
+            // of a scene read, which has already been authorized.
             await client.query(query_update_instanceObj, params);
             return await this.getByUuid(client, instanceObjectUUID);
         } catch (err) {

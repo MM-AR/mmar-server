@@ -1,14 +1,13 @@
 // get attribute type
 import {RequestHandler} from "express";
-import {database_connection} from "../../index";
-import {filter_object} from "../../data/services/middleware/object_filter";
 import {
-  API404Error,
   BaseError,
   HTTP500Error,
 } from "../../data/services/middleware/error_handling/standard_errors.middleware";
 import {AttributeType} from "../../../mmar-global-data-structure";
 import Metamodel_attribute_types_connection from "../../data/meta/Metamodel_attribute_types.connection";
+import { requireUser } from "../../data/services/middleware/auth.middleware";
+import { withTransaction } from "../../data/services/transaction";
 
 /**
  * @classdesc - This class is used to handle all the requests for the meta attribute type.
@@ -16,29 +15,19 @@ import Metamodel_attribute_types_connection from "../../data/meta/Metamodel_attr
  * @class - Metamodel_attribute_types_controller
  */
 class Metamodel_attribute_typesController {
-  get_all_attributetypes: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-    try {
-      await client.query("BEGIN");
-      const sc = await Metamodel_attribute_types_connection.getAll(
-        client,
-        req.body.tokendata.uuid,
-      );
-      if (Array.isArray(sc)) {
-        res.status(200).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(`Cannot get all the meta attribute types.`);
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  get_all_attributetypes: RequestHandler = withTransaction(async (client, req) => {
+  const sc = await Metamodel_attribute_types_connection.getAll(
+    client,
+    requireUser(req).uuid,
+  );
+  if (Array.isArray(sc)) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(`Cannot get all the meta attribute types.`);
+  }
+  });
 
   /**
    * @description - Get a specific attribute type by its uuid.
@@ -46,38 +35,27 @@ class Metamodel_attribute_typesController {
    * @param res
    * @param next
    * @yield {status: 200, body: {AttributeType}} - The attribute type.
-   * @throws {API404Error} - If the attribute type is not found.
+   * @throws {HTTP404Error} - If the attribute type is not found.
    * @throws {HTTP500Error} - If the acquisition of the attribute type fails.
    * @memberof Metamodel_attribute_types_controller
    * @method
    */
-  get_attributetype_by_uuid: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-
-    try {
-      await client.query("BEGIN");
-      const sc = await Metamodel_attribute_types_connection.getByUuid(
-        client,
-        req.params.uuid,
-        req.body.tokendata.uuid,
-      );
-      if (sc instanceof AttributeType) {
-        res.status(200).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(
-          `Cannot get the meta attribute type ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  get_attributetype_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+  const sc = await Metamodel_attribute_types_connection.getByUuid(
+    client,
+    req.params.uuid,
+    requireUser(req).uuid,
+  );
+  if (sc instanceof AttributeType) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(
+      `Cannot get the meta attribute type ${req.params.uuid}.`,
+    );
+  }
+  });
 
   /**
    * @description - Get all the attribute types for a specific meta attribute by its uuid.
@@ -86,37 +64,26 @@ class Metamodel_attribute_typesController {
    * @param next
    * @yield {status: 200, body: {AttributeType[]}} - The attribute types.
    * @throws {HTTP500Error} - If the acquisition of the attribute types fails.
-   * @throws {API404Error} - If the meta attribute is not found.
+   * @throws {HTTP404Error} - If the meta attribute is not found.
    * @memberof Metamodel_attribute_types_controller
    * @method
    */
-  get_attributetype_for_attribute: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-
-    try {
-      await client.query("BEGIN");
-      const sc = await Metamodel_attribute_types_connection.getAllByParentUuid(
-        client,
-        req.params.uuid,
-        req.body.tokendata.uuid,
-      );
-      if (Array.isArray(sc)) {
-        res.status(200).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(
-          `Cannot get the meta attribute types for the meta attribute ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  get_attributetype_for_attribute: RequestHandler = withTransaction(async (client, req) => {
+  const sc = await Metamodel_attribute_types_connection.getAllByParentUuid(
+    client,
+    req.params.uuid,
+    requireUser(req).uuid,
+  );
+  if (Array.isArray(sc)) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(
+      `Cannot get the meta attribute types for the meta attribute ${req.params.uuid}.`,
+    );
+  }
+  });
 
   /**
    * @description - Create all the attribute types for a specific meta attribute by its uuid.
@@ -129,36 +96,25 @@ class Metamodel_attribute_typesController {
    * @memberOf Metamodel_attribute_typesController
    * @method
    */
-  post_attributetype_for_attribute: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-
-    try {
-      await client.query("BEGIN");
-      const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
-      const sc =
-        await Metamodel_attribute_types_connection.postAttributeTypeForAttribute(
-          client,
-          req.params.uuid,
-          newAttributeType,
-          req.body.tokendata.uuid,
-        );
-      if (sc instanceof AttributeType) {
-        res.status(201).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(
-          `Cannot post the meta attribute type for the meta attribute ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  post_attributetype_for_attribute: RequestHandler = withTransaction(async (client, req) => {
+  const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
+  const sc =
+    await Metamodel_attribute_types_connection.postAttributeTypeForAttribute(
+      client,
+      req.params.uuid,
+      newAttributeType,
+      requireUser(req).uuid,
+    );
+  if (sc instanceof AttributeType) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(
+      `Cannot post the meta attribute type for the meta attribute ${req.params.uuid}.`,
+    );
+  }
+  }, { status: 201 });
 
   /**
    * @description - Modify a specific attribute types by its uuid.
@@ -171,47 +127,36 @@ class Metamodel_attribute_typesController {
    * @memberOf Metamodel_attribute_typesController
    * @method
    */
-  patch_attributetype_by_uuid: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
+  patch_attributetype_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+  const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
+  const hardPatch = req.query.hardpatch === "true";
+  let sc;
 
-    try {
-      await client.query("BEGIN");
-      const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
-      const hardPatch = req.query.hardpatch === "true";
-      let sc;
-
-      if (hardPatch) {
-        sc = await Metamodel_attribute_types_connection.hardUpdate(
-          client,
-          req.params.uuid,
-          newAttributeType,
-          req.body.tokendata.uuid,
-        );
-      } else {
-        sc = await Metamodel_attribute_types_connection.update(
-          client,
-          req.params.uuid,
-          newAttributeType,
-          req.body.tokendata.uuid,
-        );
-      }
-      if (sc instanceof AttributeType) {
-        res.status(200).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(
-          `Failed to patch the meta attribute type ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  if (hardPatch) {
+    sc = await Metamodel_attribute_types_connection.hardUpdate(
+      client,
+      req.params.uuid,
+      newAttributeType,
+      requireUser(req).uuid,
+    );
+  } else {
+    sc = await Metamodel_attribute_types_connection.update(
+      client,
+      req.params.uuid,
+      newAttributeType,
+      requireUser(req).uuid,
+    );
+  }
+  if (sc instanceof AttributeType) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(
+      `Failed to patch the meta attribute type ${req.params.uuid}.`,
+    );
+  }
+  });
 
   /**
    * @description - Create a specific attribute type by its uuid.
@@ -224,35 +169,24 @@ class Metamodel_attribute_typesController {
    * @memberOf Metamodel_attribute_typesController
    * @method
    */
-  post_attributetype_by_uuid: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-
-    try {
-      await client.query("BEGIN");
-      const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
-      newAttributeType.set_uuid(req.params.uuid);
-      const sc = await Metamodel_attribute_types_connection.create(
-        client,
-        newAttributeType,
-        req.body.tokendata.uuid,
-      );
-      if (sc instanceof AttributeType) {
-        res.status(201).json(filter_object(sc, req.query.filter));
-      } else if (sc instanceof BaseError) {
-        throw sc;
-      } else {
-        throw new HTTP500Error(
-          `Failed to post the meta attribute type ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  post_attributetype_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+  const newAttributeType = AttributeType.fromJS(req.body) as AttributeType;
+  newAttributeType.set_uuid(req.params.uuid);
+  const sc = await Metamodel_attribute_types_connection.create(
+    client,
+    newAttributeType,
+    requireUser(req).uuid,
+  );
+  if (sc instanceof AttributeType) {
+    return sc;
+  } else if (sc instanceof BaseError) {
+    throw sc;
+  } else {
+    throw new HTTP500Error(
+      `Failed to post the meta attribute type ${req.params.uuid}.`,
+    );
+  }
+  }, { status: 201 });
 
   /**
    * @description - Delete a specific attribute type by its uuid.
@@ -264,35 +198,24 @@ class Metamodel_attribute_typesController {
    * @memberOf Metamodel_attribute_typesController
    * @method
    */
-  delete_attributetype_by_uuid: RequestHandler = async (req, res, next) => {
-    const client = await database_connection.getPool().connect();
-
-    try {
-      await client.query("BEGIN");
-      const resultQuery =
-        await Metamodel_attribute_types_connection.deleteByUuid(
-          client,
-          req.params.uuid,
-          req.body.tokendata.uuid,
-        );
-      if (Array.isArray(resultQuery)) {
-        //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
-        res.status(200).json(filter_object(resultQuery, req.query.filter));
-      } else if (resultQuery instanceof BaseError) {
-        throw resultQuery;
-      } else {
-        throw new HTTP500Error(
-          `Failed to delete the meta attribute type ${req.params.uuid}.`,
-        );
-      }
-      await client.query("COMMIT");
-    } catch (err) {
-      await client.query("ROLLBACK");
-      next(err);
-    } finally {
-      (await client).release();
-    }
-  };
+  delete_attributetype_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+  const resultQuery =
+    await Metamodel_attribute_types_connection.deleteByUuid(
+      client,
+      req.params.uuid,
+      requireUser(req).uuid,
+    );
+  if (Array.isArray(resultQuery)) {
+    //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
+    return resultQuery;
+  } else if (resultQuery instanceof BaseError) {
+    throw resultQuery;
+  } else {
+    throw new HTTP500Error(
+      `Failed to delete the meta attribute type ${req.params.uuid}.`,
+    );
+  }
+  });
 }
 
 export default new Metamodel_attribute_typesController();

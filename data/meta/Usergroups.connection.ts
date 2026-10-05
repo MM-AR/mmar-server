@@ -10,6 +10,7 @@ import {
     HTTP404Error,
 } from "../services/middleware/error_handling/standard_errors.middleware";
 import Metamodel_common_functionsConnection from "./Metamodel_common_functions.connection";
+import {is_administrator} from "../services/authorization";
 
 class UsergroupsConnection implements CRUD {
     async getAll(client: PoolClient, userUuid?: UUID): Promise<Usergroup[] | BaseError> {
@@ -69,19 +70,16 @@ class UsergroupsConnection implements CRUD {
 
                 for (const row of dataWriteRights.rows) {
                     newUserGroup.add_write_right(row.uuid_metaobject);
-                    newUserGroup.add_write_right(row.uuid_instance_object);
                 }
                 for (const row of dataReadRights.rows) {
                     newUserGroup.add_read_right(row.uuid_metaobject);
-                    newUserGroup.add_read_right(row.uuid_instance_object);
                 }
                 for (const row of dataDeleteRights.rows) {
                     newUserGroup.add_delete_right(row.uuid_metaobject);
-                    newUserGroup.add_delete_right(row.uuid_instance_object);
                 }
 
                 for (const row of dataCreateInstances.rows) {
-                    newUserGroup.add_can_create_instances(row.uuid_metaobject);
+                    newUserGroup.add_can_create_instance(row.uuid_metaobject);
                 }
 
             }
@@ -175,12 +173,7 @@ class UsergroupsConnection implements CRUD {
                 const type = await Metamodel_common_functionsConnection.getTypeOfObject(client, readRight);
                 if (type === "metaobject") {
                     await client.query(
-                        "INSERT INTO has_read_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2)",
-                        [usergroupUuid, readRight],
-                    );
-                } else if (type === "instanceobject") {
-                    await client.query(
-                        "INSERT INTO has_read_right (uuid_user_group, uuid_instance_object) VALUES ($1, $2)",
+                        "INSERT INTO has_read_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2) ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;",
                         [usergroupUuid, readRight],
                     );
                 }
@@ -188,21 +181,21 @@ class UsergroupsConnection implements CRUD {
 
             for (const right of usergroupToUpdate.write_right) {
                 await client.query(
-                    "INSERT INTO has_write_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2)",
+                    "INSERT INTO has_write_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2) ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;",
                     [usergroupUuid, right],
                 );
             }
 
             for (const right of usergroupToUpdate.delete_right) {
                 await client.query(
-                    "INSERT INTO has_delete_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2)",
+                    "INSERT INTO has_delete_right (uuid_user_group, uuid_metaobject) VALUES ($1, $2) ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;",
                     [usergroupUuid, right],
                 );
             }
 
-            for (const right of usergroupToUpdate.can_create_instances) {
+            for (const right of usergroupToUpdate.can_create_instance) {
                 await client.query(
-                    "INSERT INTO can_create_instances (uuid_user_group, uuid_metaobject) VALUES ($1, $2)",
+                    "INSERT INTO can_create_instances (uuid_user_group, uuid_metaobject) VALUES ($1, $2) ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;",
                     [usergroupUuid, right],
                 );
             }
@@ -240,17 +233,19 @@ class UsergroupsConnection implements CRUD {
             const readRightsRemoved = currentUserGroup.get_read_right_difference(usergroupToUpdate.get_read_right()).removed;
             const writeRightsRemoved = currentUserGroup.get_write_right_difference(usergroupToUpdate.get_write_right()).removed;
             const deleteRightsRemoved = currentUserGroup.get_delete_right_difference(usergroupToUpdate.get_delete_right()).removed;
-            const createInstancesRemoved = currentUserGroup.get_can_create_instances_difference(usergroupToUpdate.get_can_create_instances()).removed;
+            const createInstancesRemoved = currentUserGroup.get_can_create_instance_difference(usergroupToUpdate.get_can_create_instance()).removed;
 
-            const allRightsRemoved = [
-                ...readRightsRemoved,
-                ...writeRightsRemoved,
-                ...deleteRightsRemoved,
-                ...createInstancesRemoved
-            ];
-
-            for (const right of allRightsRemoved) {
-                await this.deleteRight(client, usergroupUuid, right);
+            for (const right of readRightsRemoved) {
+                this.deleteRight(client, usergroupUuid, right, userUuid, true, false, false);
+            }
+            for (const right of writeRightsRemoved) {
+                this.deleteRight(client, usergroupUuid, right, userUuid, false, true, false);
+            }
+            for (const right of deleteRightsRemoved) {
+                this.deleteRight(client, usergroupUuid, right, userUuid, false, false, true);
+            }
+            for (const right of createInstancesRemoved) {
+                this.deleteRight(client, usergroupUuid, right, userUuid, false, false, false, true);
             }
 
             return await this.getByUuid(client, usergroupUuid);
@@ -327,6 +322,19 @@ class UsergroupsConnection implements CRUD {
                 if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUuid} has no right to update the usergroup ${usergroupUuid}`);
             }
 
+            // Joining an administrative group grants every right there is, so it
+            // is the one membership that write rights on the group are not enough
+            // to confer: only an administrator may hand out administrator. The
+            // check is here rather than in the callers because this is the single
+            // statement that creates a membership.
+            if (usergroup instanceof Usergroup && usergroup.get_is_administrator()) {
+                if (!userUuid || !(await is_administrator(client, userUuid))) {
+                    return new HTTP403NORIGHT(
+                        `Only an administrator can add a user to the administrative user group ${usergroupUuid}`,
+                    );
+                }
+            }
+
             await client.query(
                 "INSERT INTO has_user_user_group (uuid_user, uuid_user_group) VALUES ($1, $2)",
                 [userFilterUuid, usergroupUuid],
@@ -376,7 +384,7 @@ class UsergroupsConnection implements CRUD {
         can_create_instances?: boolean,
     ): Promise<Usergroup | undefined | BaseError> {
         try {
-            const res = await this.addRight(client, usergroupUuid, objectUuid, "uuid_metaobject", requesterUuid, has_read_right, has_write_right, has_delete_right, can_create_instances);
+            const res = await this.addRight(client, usergroupUuid, objectUuid, requesterUuid, has_read_right, has_write_right, has_delete_right, can_create_instances);
             if (res instanceof BaseError) return res;
             return await this.getByUuid(client, usergroupUuid, requesterUuid);
         } catch (err) {
@@ -386,7 +394,7 @@ class UsergroupsConnection implements CRUD {
         }
     }
 
-    async addRightToInstanceObject(
+    async deleteRightFromMetaObject(
         client: PoolClient,
         usergroupUuid: UUID,
         objectUuid: UUID,
@@ -394,54 +402,107 @@ class UsergroupsConnection implements CRUD {
         has_read_right?: boolean,
         has_write_right?: boolean,
         has_delete_right?: boolean,
+        can_create_instances?: boolean,
     ): Promise<Usergroup | undefined | BaseError> {
         try {
-            const res = await this.addRight(client, usergroupUuid, objectUuid, "uuid_instance_object", requesterUuid, has_read_right, has_write_right, has_delete_right);
+            // deleteRight removes a right only when its flag is set, and the flags
+            // come from the request body. A DELETE carries no body in most clients,
+            // so every flag arrived undefined and the endpoint answered 200 having
+            // revoked nothing — an operator was told a right was withdrawn while it
+            // was still in force. Naming no right therefore means all of them, which
+            // is what deleting the link between a group and an object should do.
+            const no_right_named =
+                has_read_right === undefined &&
+                has_write_right === undefined &&
+                has_delete_right === undefined &&
+                can_create_instances === undefined;
+
+            const res = await this.deleteRight(
+                client,
+                usergroupUuid,
+                objectUuid,
+                requesterUuid,
+                no_right_named || has_read_right,
+                no_right_named || has_write_right,
+                no_right_named || has_delete_right,
+                no_right_named || can_create_instances,
+            );
             if (res instanceof BaseError) return res;
-            return await this.getByUuid(client, usergroupUuid);
+            return await this.getByUuid(client, usergroupUuid, requesterUuid);
         } catch (err) {
             throw new Error(
-                `Error adding the object ${objectUuid} to the usergroup ${usergroupUuid}: ${err}`,
+                `Error deleting the object ${objectUuid} from the usergroup ${usergroupUuid}: ${err}`,
             );
         }
     }
 
-    async deleteRight(
+    // async addRightToInstanceObject(
+    //     client: PoolClient,
+    //     usergroupUuid: UUID,
+    //     objectUuid: UUID,
+    //     requesterUuid?: UUID,
+    //     has_read_right?: boolean,
+    //     has_write_right?: boolean,
+    //     has_delete_right?: boolean,
+    // ): Promise<Usergroup | undefined | BaseError> {
+    //     try {
+    //         const res = await this.addRight(client, usergroupUuid, objectUuid, "uuid_instance_object", requesterUuid, has_read_right, has_write_right, has_delete_right);
+    //         if (res instanceof BaseError) return res;
+    //         return await this.getByUuid(client, usergroupUuid);
+    //     } catch (err) {
+    //         throw new Error(
+    //             `Error adding the object ${objectUuid} to the usergroup ${usergroupUuid}: ${err}`,
+    //         );
+    //     }
+    // }
+
+    private async deleteRight(
         client: PoolClient,
         usergroupUuid: UUID,
         objectUuid: UUID,
-        userUuid?: UUID,
+        requesterUuid?: UUID,
+        has_read_right?: boolean,
+        has_write_right?: boolean,
+        has_delete_right?: boolean,
+        can_create_instances?: boolean,
     ): Promise<Usergroup | undefined | BaseError> {
         try {
 
-            if (userUuid) {
+            if (requesterUuid) {
                 const write_check = queries.getQuery_get("write_check");
-                const res = await client.query(write_check, [objectUuid, userUuid]);
-                if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${userUuid} has no right to update the usergroup ${usergroupUuid}`);
+                const res = await client.query(write_check, [objectUuid, requesterUuid]);
+                if (res.rowCount == 0) return new HTTP403NORIGHT(`The user ${requesterUuid} has no right to update the usergroup ${usergroupUuid}`);
             }
 
-
+            if (has_read_right) {
             await client.query(
                 `
                     DELETE
                     FROM has_read_right
                     WHERE uuid_user_group = $1
-                      AND (uuid_instance_object = $2 OR uuid_metaobject = $2);`, [usergroupUuid, objectUuid])
+                      AND uuid_metaobject = $2;`, [usergroupUuid, objectUuid]);
+            }
+            if (has_write_right) {
             await client.query(
                 `
                     DELETE
                     FROM has_write_right
                     WHERE uuid_user_group = $1
-                      AND (uuid_instance_object = $2 OR uuid_metaobject = $2);`, [usergroupUuid, objectUuid])
+                      AND uuid_metaobject = $2;`, [usergroupUuid, objectUuid])
+            }
+            if (has_delete_right) {
             await client.query(` DELETE
                                  FROM has_delete_right
                                  WHERE uuid_user_group = $1
-                                   AND (uuid_instance_object = $2 OR uuid_metaobject = $2);`, [usergroupUuid, objectUuid]);
+                                   AND uuid_metaobject = $2;`, [usergroupUuid, objectUuid]);
+            }
+            if (can_create_instances) {
             await client.query(`DELETE
                                 FROM can_create_instances
                                 WHERE uuid_user_group = $1
                                   AND uuid_metaobject = $2;`, [usergroupUuid, objectUuid]);
-            return await this.getByUuid(client, usergroupUuid, userUuid);
+                return await this.getByUuid(client, usergroupUuid, requesterUuid);
+            }
         } catch (err) {
             throw new Error(
                 `Error deleting the object ${objectUuid} from the usergroup ${usergroupUuid}: ${err}`,
@@ -453,7 +514,7 @@ class UsergroupsConnection implements CRUD {
         client: PoolClient,
         usergroupUuid: UUID,
         objectUuid: UUID,
-        target: 'uuid_metaobject' | 'uuid_instance_object',
+        // target: 'uuid_metaobject' | 'uuid_instance_object',
         requesterUuid?: UUID,
         has_read_right?: boolean,
         has_write_right?: boolean,
@@ -469,29 +530,32 @@ class UsergroupsConnection implements CRUD {
 
         if (has_read_right) {
             await client.query(
-                `INSERT INTO has_read_right (uuid_user_group, ${target})
-                 VALUES ($1, $2)`,
+                `INSERT INTO has_read_right (uuid_user_group, uuid_metaobject)
+                 VALUES ($1, $2)
+                 ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;`  ,
                 [usergroupUuid, objectUuid],
             );
         }
         if (has_write_right) {
             await client.query(
-                `INSERT INTO has_write_right (uuid_user_group, ${target})
-                 VALUES ($1, $2)`,
+                `INSERT INTO has_write_right (uuid_user_group, uuid_metaobject)
+                 VALUES ($1, $2)
+                 ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;`  ,
                 [usergroupUuid, objectUuid],
             );
         }
         if (has_delete_right) {
             await client.query(
-                `INSERT INTO has_delete_right (uuid_user_group, ${target})
-                 VALUES ($1, $2)`,
+                `INSERT INTO has_delete_right (uuid_user_group, uuid_metaobject)
+                 VALUES ($1, $2)
+                 ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;`  ,
                 [usergroupUuid, objectUuid],
             );
         }
 
         if (can_create_instances) {
             await client.query(
-                "INSERT INTO can_create_instances (uuid_user_group, uuid_metaobject) VALUES ($1, $2)",
+                "INSERT INTO can_create_instances (uuid_user_group, uuid_metaobject) VALUES ($1, $2) ON CONFLICT (uuid_user_group, uuid_metaobject) DO NOTHING;",
                 [usergroupUuid, objectUuid],
             );
         }

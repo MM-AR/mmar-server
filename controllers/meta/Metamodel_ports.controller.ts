@@ -1,10 +1,10 @@
 import {plainToInstance} from "class-transformer";
 import {RequestHandler} from "express";
-import {database_connection} from "../..";
 import {Port} from "../../../mmar-global-data-structure";
 import {BaseError, HTTP500Error,} from "../../data/services/middleware/error_handling/standard_errors.middleware";
-import {filter_object} from "../../data/services/middleware/object_filter";
 import Metamodel_ports_connection from "../../data/meta/Metamodel_ports.connection";
+import { requireUser } from "../../data/services/middleware/auth.middleware";
+import { withTransaction } from "../../data/services/transaction";
 
 /**
  * @classdesc - This class is used to handle all the requests for the meta ports.
@@ -12,30 +12,19 @@ import Metamodel_ports_connection from "../../data/meta/Metamodel_ports.connecti
  * @class - Metamodel_ports_controller
  */
 class Metamodel_portsController {
-    get_all_ports: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Metamodel_ports_connection.getAll(
-                client,
-                req.body.tokendata.uuid
-            );
-            if (Array.isArray(sc)) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to retrieve meta ports.`);
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+    get_all_ports: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Metamodel_ports_connection.getAll(
+            client,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to retrieve meta ports.`);
         }
-    };
+    });
 
     /**
      * @description - Get a specific meta port by its UUID.
@@ -43,37 +32,25 @@ class Metamodel_portsController {
      * @param res
      * @param next
      * @yield {status: 200, body: {Port}} - The meta port.
-     * @throws {API404Error} - If the meta port is not found.
+     * @throws {HTTP404Error} - If the meta port is not found.
      * @throws {HTTP500Error} - If the acquisition of the meta port fails.
      * @memberof Metamodel_ports_controller
      * @method
      */
-    get_ports_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Metamodel_ports_connection.getByUuid(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
-            );
-            if (sc instanceof Port) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to retrieve meta port ${req.params.uuid}.`);
-            }
-
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+    get_ports_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Metamodel_ports_connection.getByUuid(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (sc instanceof Port) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to retrieve meta port ${req.params.uuid}.`);
         }
-    };
+    });
 
     /**
      * @description - Get all the meta ports for a specific scene type.
@@ -82,37 +59,26 @@ class Metamodel_portsController {
      * @param next
      * @yield {status: 200, body: {Port[]}} - The meta ports.
      * @throws {HTTP500Error} - If the acquisition of the meta ports fails.
-     * @throws {API404Error} - If the scene type is not found.
+     * @throws {HTTP404Error} - If the scene type is not found.
      * @memberof Metamodel_ports_controller
      * @method
      */
-    get_ports_for_scene: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Metamodel_ports_connection.getAllByParentUuid(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
+    get_ports_for_scene: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Metamodel_ports_connection.getAllByParentUuid(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to retrieve meta ports for the scene type ${req.params.uuid}.`
             );
-            if (Array.isArray(sc)) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to retrieve meta ports for the scene type ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 
     /**
      * @description - Create a new meta port by its UUID.
@@ -125,34 +91,22 @@ class Metamodel_portsController {
      * @memberof Metamodel_ports_controller
      * @method
      */
-    post_port_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-
-            const newPort = Port.fromJS(req.body) as Port;
-            newPort.set_uuid(req.params.uuid);
-            const sc = await Metamodel_ports_connection.create(
-                client,
-                newPort,
-                req.body.tokendata.uuid
-            );
-            if (sc instanceof Port) {
-                res.status(201).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to create meta port ${req.params.uuid}.`);
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+    post_port_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const newPort = Port.fromJS(req.body) as Port;
+        newPort.set_uuid(req.params.uuid);
+        const sc = await Metamodel_ports_connection.create(
+            client,
+            newPort,
+            requireUser(req).uuid
+        );
+        if (sc instanceof Port) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to create meta port ${req.params.uuid}.`);
         }
-    };
+    }, { status: 201 });
 
     /**
      * @description - Create a new meta port for a specific scene type.
@@ -165,37 +119,25 @@ class Metamodel_portsController {
      * @memberof Metamodel_ports_controller
      * @method
      */
-    post_port: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-
-            //let newPort = request_to_port(req.body);
-            const newPort = plainToInstance(Port, req.body);
-            const sc = await Metamodel_ports_connection.postPortsForSceneType(
-                client,
-                req.params.uuid,
-                newPort,
-                req.body.tokendata.uuid
+    post_port: RequestHandler = withTransaction(async (client, req) => {
+        //let newPort = request_to_port(req.body);
+        const newPort = plainToInstance(Port, req.body);
+        const sc = await Metamodel_ports_connection.postPortsForSceneType(
+            client,
+            req.params.uuid,
+            newPort,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to create meta port for the scene type ${req.params.uuid}.`
             );
-            if (Array.isArray(sc)) {
-                res.status(201).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to create meta port for the scene type ${req.params.uuid}.`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    }, { status: 201 });
 
     /**
      * @description - Modify a specific meta port by its UUID.
@@ -208,47 +150,35 @@ class Metamodel_portsController {
      * @memberOf Metamodel_portsController
      * @method
      */
-    patch_port_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
+    patch_port_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const newPort = Port.fromJS(req.body) as Port;
+        const hardPatch = req.query.hardpatch === "true";
+        let sc;
 
-        try {
-            await client.query("BEGIN");
-
-            const newPort = Port.fromJS(req.body) as Port;
-            const hardPatch = req.query.hardpatch === "true";
-            let sc;
-
-            if (hardPatch) {
-                sc = await Metamodel_ports_connection.hardUpdate(
-                    client,
-                    req.params.uuid,
-                    newPort,
-                    req.body.tokendata.uuid
-                );
-            } else {
-                sc = await Metamodel_ports_connection.update(
-                    client,
-                    req.params.uuid,
-                    newPort,
-                    req.body.tokendata.uuid
-                );
-            }
-
-            if (sc instanceof Port) {
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to update meta port ${req.params.uuid}`);
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+        if (hardPatch) {
+            sc = await Metamodel_ports_connection.hardUpdate(
+                client,
+                req.params.uuid,
+                newPort,
+                requireUser(req).uuid
+            );
+        } else {
+            sc = await Metamodel_ports_connection.update(
+                client,
+                req.params.uuid,
+                newPort,
+                requireUser(req).uuid
+            );
         }
-    };
+
+        if (sc instanceof Port) {
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to update meta port ${req.params.uuid}`);
+        }
+    });
 
     /**
      * @description - Delete a specific meta port by its UUID.
@@ -260,32 +190,21 @@ class Metamodel_portsController {
      * @memberOf Metamodel_portsController
      * @method
      */
-    delete_ports_by_uuid: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Metamodel_ports_connection.deleteByUuid(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
-            );
-            if (Array.isArray(sc)) {
-                //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(`Failed to delete meta port ${req.params.uuid}`);
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
+    delete_ports_by_uuid: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Metamodel_ports_connection.deleteByUuid(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(`Failed to delete meta port ${req.params.uuid}`);
         }
-    };
+    });
 
     /**
      * @description - Delete all the meta ports for a specific scene type.
@@ -297,34 +216,23 @@ class Metamodel_portsController {
      * @memberOf Metamodel_portsController
      * @method
      */
-    delete_ports_for_scene: RequestHandler = async (req, res, next) => {
-        const client = await database_connection.getPool().connect();
-
-        try {
-            await client.query("BEGIN");
-            const sc = await Metamodel_ports_connection.deletePortsForScene(
-                client,
-                req.params.uuid,
-                req.body.tokendata.uuid
+    delete_ports_for_scene: RequestHandler = withTransaction(async (client, req) => {
+        const sc = await Metamodel_ports_connection.deletePortsForScene(
+            client,
+            req.params.uuid,
+            requireUser(req).uuid
+        );
+        if (Array.isArray(sc)) {
+            //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
+            return sc;
+        } else if (sc instanceof BaseError) {
+            throw sc;
+        } else {
+            throw new HTTP500Error(
+                `Failed to delete meta ports for the scene type ${req.params.uuid}`
             );
-            if (Array.isArray(sc)) {
-                //The result does not contains any uuid, i.e. the metaobject is not linked to any instance
-                res.status(200).json(filter_object(sc, req.query.filter));
-            } else if (sc instanceof BaseError) {
-                throw sc;
-            } else {
-                throw new HTTP500Error(
-                    `Failed to delete meta ports for the scene type ${req.params.uuid}`
-                );
-            }
-            await client.query("COMMIT");
-        } catch (err) {
-            await client.query("ROLLBACK");
-            next(err);
-        } finally {
-            (await client).release();
         }
-    };
+    });
 }
 
 export default new Metamodel_portsController();
