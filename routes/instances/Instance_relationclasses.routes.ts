@@ -2,12 +2,21 @@ import { Router } from "express";
 import Instance_relationclass_controller from "../../controllers/instance/Instance_relationclasses.controller";
 import { verif_relationclass_instances_body } from "../../data/services/rule_engine/instance_rule_engine/Instance_relationClasses.verificator";
 import { authenticate_token } from "../../data/services/middleware/auth.middleware";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
+import {
+  authorize_instance_object,
+  authorize_scene_instance,
+} from "../../data/services/middleware/scene_authorization.middleware";
 
 /**
  * @description - These are the routes for the relationclasses instances.
  * @type {Router}
  */
 const relationClassInstanceRouter = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(relationClassInstanceRouter);
 
 relationClassInstanceRouter.get(
 /*
@@ -46,6 +55,7 @@ relationClassInstanceRouter.get(
 */
   "/relationclassesInstances/:uuid",
   authenticate_token,
+  authorize_instance_object("read"),
   Instance_relationclass_controller.get_relationclass_instances_by_uuid
 );
 
@@ -98,6 +108,7 @@ relationClassInstanceRouter.patch(
   "/relationclassesInstances/:uuid",
   verif_relationclass_instances_body,
   authenticate_token,
+  authorize_instance_object("edit"),
   Instance_relationclass_controller.patch_relationclass_instances_by_uuid
 );
 
@@ -140,6 +151,7 @@ relationClassInstanceRouter.post(
   "/relationclassesInstances/:uuid",
   verif_relationclass_instances_body,
   authenticate_token,
+  authorize_instance_object("edit"),
   Instance_relationclass_controller.post_relationclass_instances_by_uuid
 );
 
@@ -163,6 +175,7 @@ relationClassInstanceRouter.delete(
 */
   "/relationclassesInstances/:uuid",
   authenticate_token,
+  authorize_instance_object("delete"),
   Instance_relationclass_controller.delete_relationclass_instances_by_uuid
 );
 
@@ -181,7 +194,7 @@ relationClassInstanceRouter.get(
       "schema": {
         "type": "array",
         "items": {
-          "$ref": "#/components/schemas/RelationclassInstance"   
+          "$ref": "#/components/schemas/RelationclassInstance"   
 
         }
       }
@@ -211,6 +224,7 @@ relationClassInstanceRouter.get(
 */
   "/sceneInstances/:uuid/relationclassesInstances",
   authenticate_token,
+  authorize_scene_instance("read"),
   Instance_relationclass_controller.get_relationclasses_instances_for_scene
 );
 
@@ -263,6 +277,7 @@ relationClassInstanceRouter.post(
 "/sceneInstances/:uuid/relationclassesInstances",
 verif_relationclass_instances_body,
 authenticate_token,
+authorize_scene_instance("edit"),
 Instance_relationclass_controller.post_relationclass_instances_for_scene
 );
 

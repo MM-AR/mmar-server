@@ -1,36 +1,91 @@
 import { NextFunction, Request, Response } from "express";
-import { BaseError } from "./standard_errors.middleware";
+import { BaseError, HttpStatusCode } from "./standard_errors.middleware";
+import { record_security_event } from "../../security_audit.service";
+import { environment } from "../../environment";
 import * as winston from "winston";
-import { LogCallback } from "winston";
 
+/**
+ * @description - What a client is told when the server hit a problem it does not
+ * describe deliberately. The details of such a failure — the failing SQL, the
+ * table names, the file paths in the stack — are useful to an attacker and to
+ * nobody else, so they go to the log and not to the response.
+ */
+const OPAQUE_MESSAGE = "Internal server error";
+
+/**
+ * @description - The last middleware of the chain: it turns any error raised
+ * anywhere in the server into a response, and it always produces exactly one.
+ *
+ * Errors come in two kinds. A BaseError was raised on purpose to describe an
+ * outcome to the caller, so its status and message are sent as written. Anything
+ * else is an unexpected failure: it is logged in full and answered with an
+ * opaque 500, because its message routinely carries the raw database error.
+ * @param {unknown} err - The error raised upstream.
+ * @param {Request} req - The request being answered.
+ * @param {Response} res - The response.
+ * @param {NextFunction} next - Delegates to Express once the response has started.
+ */
 export function logError(
-  err: BaseError,
+  err: unknown,
   req: Request,
   res: Response,
   next: NextFunction
 ): void {
-  if (!errorHandler.isTrustedError(err)) {
-    next(err);
+  const operational = err instanceof BaseError;
+  const status = operational ? err.httpCode : HttpStatusCode.INTERNAL_SERVER;
+
+  // Every refused request funnels through here, whichever layer raised it, so
+  // this is the one place where a denial can be audited exhaustively.
+  if (status === HttpStatusCode.FORBIDDEN && err instanceof BaseError) {
+    record_security_event({
+      event: "access_denied",
+      outcome: "failure",
+      req: req,
+      uuid_user: req.user?.uuid,
+      username: req.user?.username,
+      reason: err.name,
+      detail: { message: err.message },
+    });
   }
-  errorHandler.handleError(err);
-  res.status(err.httpCode || 500);
-  res.send(err.message);
+
+  errorHandler.handleError(err, req);
+
+  // Something already began writing the response — a handler that threw after
+  // res.send(), for instance. Express's own handler is the only one that can
+  // close a half written response, so hand it over rather than writing twice.
+  if (res.headersSent) return next(err);
+
+  res.status(status).json({
+    error: operational ? err.message : OPAQUE_MESSAGE,
+  });
 }
 
 export class ErrorHandler {
-  public handleError(err: Error): void {
-    //console.error('Error message from the centralized error-handling component',err)
-    logger.error(
-      "Error message from the centralized error-handling component: ",
-      err
-    );
+  /**
+   * @description - Record an error with everything needed to diagnose it. This is
+   * the only place the full detail exists: the response deliberately carries none
+   * of it.
+   * @param {unknown} err - The error to record.
+   * @param {Request} req - The request it happened on, when there is one.
+   */
+  public handleError(err: unknown, req?: Request): void {
+    const where = req ? `${req.method} ${req.originalUrl}` : "outside a request";
+    if (err instanceof Error) {
+      logger.error(`Unhandled error on ${where}: ${err.message}`, err);
+    } else {
+      logger.error(`Unhandled non-error thrown on ${where}: ${String(err)}`);
+    }
   }
 
-  public isTrustedError(error: Error): boolean {
-    if (error instanceof BaseError) {
-      return error.isOperational;
-    }
-    return false;
+  /**
+   * @description - Whether the error describes an outcome the server raised on
+   * purpose. An untrusted error means the process reached a state it does not
+   * model, which is what distinguishes "answer the client" from "shut down".
+   * @param {unknown} error - The error to classify.
+   * @returns {boolean} - True if the error is operational.
+   */
+  public isTrustedError(error: unknown): boolean {
+    return error instanceof BaseError && error.isOperational;
   }
 }
 
@@ -71,36 +126,40 @@ class Logger {
   private logger: winston.Logger;
 
   constructor() {
-    const prodTransport = new winston.transports.File({
-      filename: "logs/error.log",
-      level: "error",
-    });
-    const transport = new winston.transports.Console({
-      format: formatter,
-    });
+    // A container's log is collected from its stdout, so the console transport is
+    // kept in every mode. The file transport is additional rather than an
+    // alternative: dropping it in production used to mean errors were written
+    // where nothing collects them.
+    const transports: winston.transport[] = [
+      new winston.transports.Console({ format: formatter }),
+    ];
+    if (!environment.is_development) {
+      transports.push(
+        new winston.transports.File({ filename: "logs/error.log", level: "error" })
+      );
+    }
+
     this.logger = winston.createLogger({
-      level: process.env.NODE_ENV == "development" ? "trace" : "error",
+      level: environment.is_development ? "trace" : "info",
       levels: customLevels.levels,
-      transports: [
-        process.env.NODE_ENV == "development" ? transport : prodTransport,
-      ],
+      transports: transports,
     });
     winston.addColors(customLevels.colors);
   }
 
-  trace(msg: string, meta?: LogCallback) {
+  trace(msg: string, meta?: unknown) {
     this.logger.log("trace", msg, meta);
   }
 
-  debug(msg: string, meta?: LogCallback) {
+  debug(msg: string, meta?: unknown) {
     this.logger.debug(msg, meta);
   }
 
-  info(msg: string, meta?: LogCallback) {
+  info(msg: string, meta?: unknown) {
     this.logger.info(msg, meta);
   }
 
-  warn(msg: string, meta?: LogCallback) {
+  warn(msg: string, meta?: unknown) {
     this.logger.warn(msg, meta);
   }
 
@@ -108,7 +167,7 @@ class Logger {
     this.logger.error(msg, meta);
   }
 
-  fatal(msg: string, meta?: LogCallback) {
+  fatal(msg: string, meta?: unknown) {
     this.logger.log("fatal", msg, meta);
   }
 }

@@ -38,7 +38,7 @@ class Instance_scenesConnection implements CRUD {
         let returnSceneInstance;
         try {
             if (userUuid) {
-                const read_check = queries.getQuery_get("read_check");
+                const read_check = queries.getQuery_get("sceneinstance_read_check");
                 const res = await client.query(read_check, [sceneUuid, userUuid]);
                 if (res.rowCount == 0) {
                     return new HTTP403NORIGHT(`The user ${userUuid} has no right to read the scene instance ${sceneUuid}`);
@@ -159,6 +159,9 @@ class Instance_scenesConnection implements CRUD {
             const query_create_sceneInstance = queries.getQuery_post(
                 "create_scene_instance"
             );
+            const query_create_sceneInstance_user_access = queries.getQuery_post(
+                "create_scene_instance_user_access"
+            );
 
             const created_instanceObject = await Instance_objects_connection.create(
                 client,
@@ -179,6 +182,14 @@ class Instance_scenesConnection implements CRUD {
                 newScene.get_scene_type_uuid(),
             ]);
 
+            // Granting read, edit and delete access to the user who created the scene instance
+            if (userUuid) {
+                await client.query(query_create_sceneInstance_user_access, [
+                    created_instanceObject.get_uuid(),
+                    userUuid,
+                ]);
+            }
+
             // Batch insert operations for related instances
 
             await Instance_attribute_connection.postByParentUuid(
@@ -186,25 +197,25 @@ class Instance_scenesConnection implements CRUD {
                 created_instanceObject.get_uuid(),
                 newScene.get_attribute_instances(),
                 userUuid
-            ),
-                await Instance_port_connection.postPortsInstance(
-                    client,
-                    newScene.get_port_instances()
-                ),
-                await Instance_class_connection.postClassInstances(
-                    client,
-                    newScene.get_class_instances(),
-                    created_instanceObject.get_uuid()
-                ),
-                await Instance_relationclass_connection.postRelationClassInstance(
-                    client,
-                    newScene.get_relationclass_instances(),
-                    created_instanceObject.get_uuid()
-                ),
-                await Instance_role_connection.postRolesInstance(
-                    client,
-                    newScene.get_role_instances()
-                );
+            );
+            await Instance_port_connection.postPortsInstance(
+                client,
+                newScene.get_port_instances()
+            );
+            await Instance_class_connection.postClassInstances(
+                client,
+                newScene.get_class_instances(),
+                created_instanceObject.get_uuid()
+            );
+            await Instance_relationclass_connection.postRelationClassInstance(
+                client,
+                newScene.get_relationclass_instances(),
+                created_instanceObject.get_uuid()
+            );
+            await Instance_role_connection.postRolesInstance(
+                client,
+                newScene.get_role_instances()
+            );
 
             await this.update(
                 client,
@@ -238,6 +249,25 @@ class Instance_scenesConnection implements CRUD {
         userUuid?: UUID
     ): Promise<SceneInstance | undefined | BaseError> {
         try {
+            const sceneInstanceExistsQuery = queries.getQuery_get("sceneinstance_exist_check");
+            const sceneInstanceExists = await client.query(sceneInstanceExistsQuery, [sceneInstanceUuidToUpdate]);
+            if (sceneInstanceExists.rowCount === 0) {
+                // Upsert semantics: a PATCH that targets a scene instance which does not
+                // exist yet (the first autosave of a freshly created scene) creates it
+                // instead of failing with 404. This lets the client always PATCH, without
+                // the noisy PATCH -> 404 -> POST fallback it used to need.
+                newSceneInstance.set_uuid(sceneInstanceUuidToUpdate);
+                return await this.create(client, newSceneInstance, userUuid);
+            }
+
+            if (userUuid) {
+                const edit_check = queries.getQuery_get("sceneinstance_edit_check");
+                const res = await client.query(edit_check, [sceneInstanceUuidToUpdate, userUuid]);
+                if (res.rowCount == 0) {
+                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to update the scene instance ${sceneInstanceUuidToUpdate}`);
+                }
+            }
+
             const updated_obj = await Instance_objects_connection.update(
                 client,
                 sceneInstanceUuidToUpdate,
@@ -488,6 +518,14 @@ class Instance_scenesConnection implements CRUD {
         userUuid?: UUID
     ): Promise<UUID[] | undefined | BaseError> {
         try {
+            if (userUuid) {
+                const delete_check = queries.getQuery_get("sceneinstance_delete_check");
+                const res = await client.query(delete_check, [uuidToDelete, userUuid]);
+                if (res.rowCount == 0) {
+                    return new HTTP403NORIGHT(`The user ${userUuid} has no right to delete the scene instance ${uuidToDelete}`);
+                }
+            }
+
             return await Instance_objects_connection.deleteByUuid(
                 client,
                 uuidToDelete,

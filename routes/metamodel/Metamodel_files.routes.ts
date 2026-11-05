@@ -1,12 +1,31 @@
 import { Router } from "express";
 import Metamodel_file_controller from "../../controllers/meta/Metamodel_files.controller";
 import multer from "multer";
-const upload = multer();
+import { authenticate_token } from "../../data/services/middleware/auth.middleware";
+import { environment } from "../../data/services/environment";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
+
+/**
+ * @description - Uploads are buffered in memory before being written to the
+ * database, so an unbounded multer instance let a single request decide how much
+ * of the server's memory to take. One file per request is all any route here
+ * reads, and a field cannot be a file.
+ */
+const upload = multer({
+  limits: {
+    fileSize: environment.max_upload_bytes,
+    files: 1,
+  },
+});
 /**
  * @description - These are the routes for the file.
  * @type {Router}
  */
 const fileMetaRouter: Router = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(fileMetaRouter);
 fileMetaRouter.get(
   /*
   #swagger.tags= ["Metamodel"]
@@ -36,6 +55,7 @@ fileMetaRouter.get(
   }
   */
   "/files/page",
+  authenticate_token,
   function (req, res, next) {
     if (req.query.name) {
       Metamodel_file_controller.get_file_by_name(req, res, next);
@@ -71,10 +91,15 @@ fileMetaRouter.get(
   }
   */
   "/files",
+  authenticate_token,
   Metamodel_file_controller.get_all_files
 );
 
-fileMetaRouter.get("/files/alluuids", Metamodel_file_controller.get_all_uuids);
+fileMetaRouter.get(
+  "/files/alluuids",
+  authenticate_token,
+  Metamodel_file_controller.get_all_uuids
+);
 
 fileMetaRouter.get(
   /*
@@ -105,6 +130,7 @@ fileMetaRouter.get(
   }
   */
   "/files/:uuid",
+  authenticate_token,
   Metamodel_file_controller.get_file_by_uuid
 );
 
@@ -146,6 +172,7 @@ fileMetaRouter.post(
   }
   */
   "/files/:uuid",
+  authenticate_token,
   upload.single("file"),
   Metamodel_file_controller.post_file_by_uuid
 );
@@ -186,6 +213,7 @@ fileMetaRouter.patch(
   }
   */
   "/files/:uuid",
+  authenticate_token,
   upload.single("file"),
   Metamodel_file_controller.patch_file_by_uuid
 );
@@ -226,6 +254,7 @@ fileMetaRouter.post(
   }
   */
   "/files",
+  authenticate_token,
   upload.single("file"),
   Metamodel_file_controller.post_file
 );
@@ -248,7 +277,9 @@ fileMetaRouter.delete(
     }
   }
   */
-  "/files/:uuid", Metamodel_file_controller.delete_file_by_uuid
+  "/files/:uuid",
+  authenticate_token,
+  Metamodel_file_controller.delete_file_by_uuid
 );
 
 export default fileMetaRouter;

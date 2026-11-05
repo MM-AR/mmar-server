@@ -2,11 +2,20 @@ import { Router } from "express";
 import Instance_classes_controller from "../../controllers/instance/Instance_classes.controller";
 import { verif_class_instance_body } from "../../data/services/rule_engine/instance_rule_engine/Instance_classes.verificator";
 import { authenticate_token } from "../../data/services/middleware/auth.middleware";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
+import {
+  authorize_instance_object,
+  authorize_scene_instance,
+} from "../../data/services/middleware/scene_authorization.middleware";
 
 /**
  * @description - These are the routes for the classes instances.
  */
 const classInstanceRouter = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(classInstanceRouter);
 
 classInstanceRouter.get(
   /*
@@ -45,6 +54,7 @@ classInstanceRouter.get(
   */
   "/classesInstances/:uuid",
   authenticate_token,
+  authorize_instance_object("read"),
   Instance_classes_controller.get_class_instance_by_uuid
 );
 
@@ -97,6 +107,7 @@ classInstanceRouter.patch(
   "/classesInstances/:uuid",
   verif_class_instance_body,
   authenticate_token,
+  authorize_instance_object("edit"),
   Instance_classes_controller.patch_class_instance_by_uuid
 );
 
@@ -139,6 +150,7 @@ classInstanceRouter.post(
   "/classesInstances/:uuid",
   verif_class_instance_body,
   authenticate_token,
+  authorize_instance_object("edit"),
   Instance_classes_controller.post_class_instance_by_uuid
 );
 
@@ -162,6 +174,7 @@ classInstanceRouter.delete(
   */
   "/classesInstances/:uuid",
   authenticate_token,
+  authorize_instance_object("delete"),
   Instance_classes_controller.delete_class_instance_by_uuid
 );
 
@@ -180,7 +193,7 @@ classInstanceRouter.get(
         "schema": {
           "type": "array",
           "items": {
-            "$ref": "#/components/schemas/ClassInstance"   
+            "$ref": "#/components/schemas/ClassInstance"   
           }
         }
       }
@@ -209,6 +222,7 @@ classInstanceRouter.get(
   */
   "/sceneInstances/:uuid/classesInstances",
   authenticate_token,
+  authorize_scene_instance("read"),
   Instance_classes_controller.get_classes_instances_for_scene
 );
 
@@ -261,6 +275,7 @@ classInstanceRouter.post(
   "/sceneInstances/:uuid/classesInstances",
   verif_class_instance_body,
   authenticate_token,
+  authorize_scene_instance("edit"),
   Instance_classes_controller.post_class_instance_for_scene
 );
 
@@ -284,6 +299,7 @@ classInstanceRouter.delete(
   */
   "/sceneInstances/:uuid/classesInstances",
   authenticate_token,
+  authorize_scene_instance("delete"),
   Instance_classes_controller.delete_class_instance_for_scene
 );
 

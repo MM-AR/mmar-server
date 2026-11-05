@@ -1,12 +1,17 @@
 import { Router } from "express";
 import Metamodel_procedure_controller from "../../controllers/meta/Metamodel_procedure.controller";
 import { authenticate_token } from "../../data/services/middleware/auth.middleware";
+import { validate_uuid_params } from "../../data/services/middleware/uuid_params.middleware";
 
 /**
  * @description - These are the routes for the procedures.
  * @type {Router}
  */
 const procedureMetaRouter = Router();
+
+// A malformed uuid is a bad request, not a database error: without this the
+// value reaches PostgreSQL, fails to cast, and comes back to the caller as a 500.
+validate_uuid_params(procedureMetaRouter);
 // -----------------------------------------------------------------------------
 // For specific algorithms
 // -----------------------------------------------------------------------------
@@ -155,7 +160,7 @@ procedureMetaRouter.get(
         "schema": {
           "type": "array",
           "items": {
-            "$ref": "#/components/schemas/Procedure"   
+            "$ref": "#/components/schemas/Procedure"   
 
           }
         }
@@ -185,7 +190,7 @@ procedureMetaRouter.get(
         "schema": {
           "type": "array",
           "items": {
-            "$ref": "#/components/schemas/Procedure"   
+            "$ref": "#/components/schemas/Procedure"   
 
           }
         }
@@ -271,7 +276,7 @@ procedureMetaRouter.get(
         "schema": {
           "type": "array",
           "items": {
-            "$ref": "#/components/schemas/Procedure"   
+            "$ref": "#/components/schemas/Procedure"   
 
           }
         }
